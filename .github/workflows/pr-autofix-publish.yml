@@ -131,10 +131,13 @@ jobs:
         if: steps.meta.outputs.changed_lines != '0'
         env:
           REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           CI_REPO_OWNER: ${{ github.repository_owner }}
           CI_REPO_NAME: ${{ github.event.repository.name }}
           CI_PULL_REQUEST: ${{ steps.meta.outputs.pr_number }}
           CI_COMMIT: ${{ steps.meta.outputs.head_sha }}
+          PR: ${{ steps.meta.outputs.pr_number }}
           # Pull `changed_lines` through env so bash gets a real
           # variable (and shellcheck SC2170 doesn't fire on `-gt` against
           # a `${{ }}`-interpolated literal).
@@ -158,10 +161,19 @@ jobs:
             exit 0
           fi
 
+          # Snapshot the count of bot-authored review comments BEFORE
+          # reviewdog. Reviewdog with `-filter-mode=added` silently posts
+          # nothing when the patch's lines don't overlap the PR's added
+          # range (typical case: formatter touched code that wasn't part
+          # of this PR). It exits 0 either way, so the only reliable
+          # signal is "did new review comments actually show up?".
+          before=$(gh api "repos/${GH_REPO}/pulls/${PR}/comments" \
+            --paginate --jq '[.[] | select(.user.login == "github-actions[bot]")] | length')
+
           # `-f.diff.strip=1` matches `git diff` output (a/foo b/foo).
           # `-filter-mode=added` only suggests on lines the PR added,
-          #   which avoids re-suggesting on already-resolved threads when
-          #   the contributor re-adds the autoformat label.
+          #   which avoids re-suggesting on already-resolved threads on
+          #   subsequent pushes.
           reviewdog \
             -f=diff -f.diff.strip=1 \
             -name="prettier+eslint" \
@@ -170,7 +182,24 @@ jobs:
             -level=warning \
             -fail-on-error=false < "$patch"
 
-          echo "posted=true" >> "$GITHUB_OUTPUT"
+          # Verify reviewdog actually posted suggestions. Without this
+          # check, a "0 review comments" run still emits a sticky claiming
+          # "Click Apply suggestion" — confusing because there's nothing
+          # to click.
+          after=$(gh api "repos/${GH_REPO}/pulls/${PR}/comments" \
+            --paginate --jq '[.[] | select(.user.login == "github-actions[bot]")] | length')
+          delta=$((after - before))
+          echo "Bot review comments: before=$before after=$after delta=$delta"
+
+          if [ "$delta" -gt 0 ]; then
+            echo "posted=true" >> "$GITHUB_OUTPUT"
+          else
+            # Patch had fixes but reviewdog couldn't surface them as
+            # suggestions — almost always because the formatter touched
+            # lines outside the PR's added range, which `-filter-mode=added`
+            # correctly filters out. Sticky tells the user to apply locally.
+            echo "posted=no-overlap" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Upsert sticky summary comment
         # Only post when ci-quality found something fixable (= the
@@ -203,6 +232,14 @@ jobs:
           if [ "${POSTED}" = "skipped-too-large" ]; then
             ui_state="skipped-too-large"
             prose="Diff is **${CHANGED}** lines — too large for inline suggestions (GitHub caps the review-comment API at ~3000). Run locally: \`npm run lint:fix && npm run format\`."
+          elif [ "${POSTED}" = "no-overlap" ]; then
+            # Reviewdog ran but couldn't post any inline suggestions —
+            # the formatter touched lines outside this PR's added range,
+            # which \`-filter-mode=added\` correctly filters out. There's
+            # nothing for **Apply suggestion** to click; the user has to
+            # apply locally.
+            ui_state="diff-no-overlap"
+            prose="Formatter found fixable issues, but they're on lines outside this PR's added range — there's nothing to click here. Run locally: \`npm run lint:fix && npm run format\`."
           else
             ui_state="suggestions-posted"
             prose="Posted formatting / unused-import suggestions inline. Click **Apply suggestion** on each, or run locally: \`npm run lint:fix && npm run format\`."
@@ -297,6 +334,10 @@ jobs:
             conclusion="neutral"
             title="Diff too large for inline suggestions (${CHANGED} lines)"
             summary="GitHub caps the review-comment API at ~3000 lines. Run \`npm run lint:fix && npm run format\` locally."
+          elif [ "${POSTED}" = "no-overlap" ]; then
+            conclusion="neutral"
+            title="Formatter changes don't overlap PR's added range"
+            summary="Reviewdog couldn't post inline suggestions because the formatter touched lines outside this PR's added range. Run \`npm run lint:fix && npm run format\` locally."
           else
             conclusion="neutral"
             title="Suggestions posted"
