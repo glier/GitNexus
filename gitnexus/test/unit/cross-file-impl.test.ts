@@ -52,16 +52,9 @@ vi.mock('../../src/core/tree-sitter/parser-loader.js', async (importOriginal) =>
 // Default to non-registry-primary so existing tests (which use .ts files) are
 // not affected by the isRegistryPrimary guard added in cross-file-impl. Tests
 // that verify the skip behavior can override this with mockReturnValue(true).
-vi.mock('../../src/core/ingestion/registry-primary-flag.js', async (importOriginal) => {
-  const actual =
-    await importOriginal<
-      typeof import('../../src/core/ingestion/registry-primary-flag.js')
-    >();
-  return {
-    ...actual,
-    isRegistryPrimary: vi.fn(() => false),
-  };
-});
+vi.mock('../../src/core/ingestion/registry-primary-flag.js', () => ({
+  isRegistryPrimary: vi.fn(() => false),
+}));
 
 import { runCrossFileBindingPropagation } from '../../src/core/ingestion/pipeline-phases/cross-file-impl.js';
 import { processCalls } from '../../src/core/ingestion/call-processor.js';
@@ -72,6 +65,15 @@ import type { ExportedTypeMap } from '../../src/core/ingestion/call-processor.js
 
 const processCallsMock = vi.mocked(processCalls);
 const isRegistryPrimaryMock = vi.mocked(isRegistryPrimary);
+
+/**
+ * Index of the `compiledQueryCache` parameter in the `processCalls` signature.
+ * graph(0), files(1), astCache(2), ctx(3), onProgress?(4), exportedTypeMap?(5),
+ * importedBindingsMap?(6), importedReturnTypesMap?(7),
+ * importedRawReturnTypesMap?(8), heritageMap?(9), bindingAccumulator?(10),
+ * compiledQueryCache?(11).
+ */
+const COMPILED_QUERY_CACHE_ARG_INDEX = 11;
 
 describe('runCrossFileBindingPropagation', () => {
   beforeEach(() => {
@@ -215,8 +217,8 @@ describe('runCrossFileBindingPropagation', () => {
 
     expect(processCallsMock).toHaveBeenCalledTimes(3);
 
-    // Argument index 11 is compiledQueryCache.
-    const caches = processCallsMock.mock.calls.map((call) => call[11]);
+    // Argument index 11 is compiledQueryCache — see COMPILED_QUERY_CACHE_ARG_INDEX.
+    const caches = processCallsMock.mock.calls.map((call) => call[COMPILED_QUERY_CACHE_ARG_INDEX]);
     // Every call must receive a non-null Map (not undefined).
     for (const cache of caches) {
       expect(cache).toBeDefined();
