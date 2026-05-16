@@ -162,6 +162,54 @@ describe('runCrossFileBindingPropagation', () => {
     }
   });
 
+  it('passes the same compiledQueryCache Map instance to every processCalls call', async () => {
+    // Verifies that the O(N)→O(1) query-cache fix is correctly wired: the
+    // `compiledQueryCache` created in runCrossFileBindingPropagation is shared
+    // across all processCalls invocations so each language's Parser.Query is
+    // compiled exactly once, not once per file.
+    const graph = createKnowledgeGraph();
+    const ctx = createResolutionContext();
+
+    const exportedTypeMap: ExportedTypeMap = new Map([
+      ['upstream.ts', new Map([['User', 'User']])],
+    ]);
+    ctx.importMap.set('upstream.ts', new Set());
+
+    const allPaths = ['upstream.ts'];
+    for (let i = 0; i < 3; i++) {
+      const file = `downstream${i}.ts`;
+      allPaths.push(file);
+      const bindings = new Map();
+      bindings.set('User', { sourcePath: 'upstream.ts', exportedName: 'User' });
+      ctx.namedImportMap.set(file, bindings);
+      ctx.importMap.set(file, new Set(['upstream.ts']));
+    }
+
+    await runCrossFileBindingPropagation(
+      graph,
+      ctx,
+      exportedTypeMap,
+      new Set(allPaths),
+      allPaths.length,
+      '/repo',
+      Date.now(),
+      () => {},
+    );
+
+    expect(processCallsMock).toHaveBeenCalledTimes(3);
+
+    // Argument index 11 is compiledQueryCache.
+    const caches = processCallsMock.mock.calls.map((call) => call[11]);
+    // Every call must receive a non-null Map (not undefined).
+    for (const cache of caches) {
+      expect(cache).toBeDefined();
+      expect(cache).toBeInstanceOf(Map);
+    }
+    // All calls share the SAME instance — the whole point of the cache.
+    expect(caches[1]).toBe(caches[0]);
+    expect(caches[2]).toBe(caches[0]);
+  });
+
   it('caps processing at MAX_CROSS_FILE_REPROCESS (2000)', async () => {
     const graph = createKnowledgeGraph();
     const ctx = createResolutionContext();
