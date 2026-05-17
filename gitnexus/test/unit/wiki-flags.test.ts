@@ -325,11 +325,13 @@ describe('wikiCommand --timeout validation', () => {
       }));
       vi.doMock('cli-progress', () => ({
         default: {
-          SingleBar: vi.fn().mockImplementation(() => ({
-            start: vi.fn(),
-            update: vi.fn(),
-            stop: vi.fn(),
-          })),
+          SingleBar: vi.fn(function () {
+            return {
+              start: vi.fn(),
+              update: vi.fn(),
+              stop: vi.fn(),
+            };
+          }),
           Presets: { shades_grey: {} },
         },
       }));
@@ -344,6 +346,111 @@ describe('wikiCommand --timeout validation', () => {
       expect(consoleSpy).toHaveBeenCalledWith('  Error: --timeout must be a positive integer\n');
     },
   );
+});
+
+describe('wikiCommand --timeout mapping', () => {
+  const originalExitCode = process.exitCode;
+
+  beforeEach(() => {
+    vi.resetModules();
+    process.exitCode = undefined;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.doUnmock('../../src/storage/git.js');
+    vi.doUnmock('../../src/storage/repo-manager.js');
+    vi.doUnmock('../../src/core/wiki/llm-client.js');
+    vi.doUnmock('../../src/core/wiki/generator.js');
+    vi.doUnmock('cli-progress');
+    process.exitCode = originalExitCode;
+  });
+
+  async function loadWikiCommandHarness() {
+    let capturedConfig: Record<string, unknown> | undefined;
+    const generatorCtor = vi
+      .fn()
+      .mockImplementation(function (_repoPath, _storagePath, _lbugPath, config) {
+        capturedConfig = config;
+        return {
+          run: vi.fn().mockResolvedValue({ mode: 'up-to-date', pagesGenerated: 0 }),
+        };
+      });
+
+    vi.doMock('../../src/storage/git.js', () => ({
+      getGitRoot: vi.fn(),
+      isGitRepo: vi.fn().mockReturnValue(true),
+    }));
+    vi.doMock('../../src/storage/repo-manager.js', () => ({
+      getStoragePaths: vi
+        .fn()
+        .mockReturnValue({ storagePath: '/tmp/wiki-storage', lbugPath: '/tmp/wiki-db' }),
+      loadMeta: vi.fn().mockResolvedValue({ createdAt: '2026-01-01T00:00:00Z' }),
+      loadCLIConfig: vi.fn().mockResolvedValue({
+        apiKey: 'sk-test',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-4o',
+        provider: 'openai',
+      }),
+      saveCLIConfig: vi.fn(),
+    }));
+    vi.doMock('../../src/core/wiki/llm-client.js', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../../src/core/wiki/llm-client.js')>();
+      return {
+        ...actual,
+        resolveLLMConfig: vi.fn().mockResolvedValue({
+          apiKey: 'sk-test',
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'gpt-4o',
+          maxTokens: 16_384,
+          temperature: 0,
+          provider: 'openai',
+        }),
+      };
+    });
+    vi.doMock('../../src/core/wiki/generator.js', () => ({
+      WikiGenerator: generatorCtor,
+    }));
+    vi.doMock('cli-progress', () => ({
+      default: {
+        SingleBar: vi.fn(function () {
+          return {
+            start: vi.fn(),
+            update: vi.fn(),
+            stop: vi.fn(),
+          };
+        }),
+        Presets: { shades_grey: {} },
+      },
+    }));
+
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { wikiCommand } = await import('../../src/cli/wiki.js');
+    return {
+      wikiCommand,
+      generatorCtor,
+      consoleSpy,
+      getCapturedConfig: () => capturedConfig,
+    };
+  }
+
+  it('maps --timeout seconds to requestTimeoutMs before constructing WikiGenerator', async () => {
+    const harness = await loadWikiCommandHarness();
+
+    await harness.wikiCommand('/tmp/repo', { timeout: '120' });
+
+    expect(harness.generatorCtor).toHaveBeenCalledTimes(1);
+    expect(harness.getCapturedConfig()?.requestTimeoutMs).toBe(120_000);
+  });
+
+  it('leaves requestTimeoutMs undefined when --timeout is omitted', async () => {
+    const harness = await loadWikiCommandHarness();
+
+    await harness.wikiCommand('/tmp/repo', {});
+
+    expect(harness.generatorCtor).toHaveBeenCalledTimes(1);
+    expect(harness.getCapturedConfig()?.requestTimeoutMs).toBeUndefined();
+  });
 });
 
 // ─── CLI config round-trip with cursor provider ──────────────────────
