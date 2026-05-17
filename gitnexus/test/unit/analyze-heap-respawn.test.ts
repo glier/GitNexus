@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const execFileSyncMock = vi.fn();
 const getHeapStatisticsMock = vi.fn();
@@ -19,11 +19,18 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
 }));
 
 describe('analyzeCommand heap respawn', () => {
+  const initialNodeOptions = process.env.NODE_OPTIONS;
+
   beforeEach(() => {
     vi.resetModules();
     execFileSyncMock.mockReset();
     getHeapStatisticsMock.mockReset();
     process.exitCode = undefined;
+  });
+
+  afterEach(() => {
+    if (initialNodeOptions === undefined) delete process.env.NODE_OPTIONS;
+    else process.env.NODE_OPTIONS = initialNodeOptions;
   });
 
   it('re-execs analyze with 16GB heap when no max-old-space-size is present', async () => {
@@ -95,6 +102,58 @@ describe('analyzeCommand heap respawn', () => {
     await analyzeCommand(undefined, {});
 
     expect(process.exitCode).toBe(1);
+    expect(cap.records().some((r) => r.msg.includes('Analysis likely ran out of memory.'))).toBe(true);
+    cap.restore();
+  });
+
+  it('prints heap guidance when child stdout contains heap OOM signature', async () => {
+    delete process.env.NODE_OPTIONS;
+    getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 512 * 1024 * 1024 });
+    execFileSyncMock.mockImplementationOnce(() => {
+      const err = new Error('Command failed') as Error & {
+        status?: number;
+        signal?: string;
+        stdout?: string;
+      };
+      err.status = 1;
+      err.signal = undefined;
+      err.stdout = 'FATAL ERROR: JavaScript heap out of memory';
+      throw err;
+    });
+
+    const { _captureLogger } = await import('../../src/core/logger.js');
+    const cap = _captureLogger();
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await analyzeCommand(undefined, {});
+
+    expect(process.exitCode).toBe(1);
+    expect(cap.records().some((r) => r.msg.includes('Analysis likely ran out of memory.'))).toBe(true);
+    cap.restore();
+  });
+
+  it('prints heap guidance when child exits 134 without output', async () => {
+    delete process.env.NODE_OPTIONS;
+    getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 512 * 1024 * 1024 });
+    execFileSyncMock.mockImplementationOnce(() => {
+      const err = new Error('Command failed') as Error & {
+        status?: number;
+        signal?: string;
+        stderr?: string;
+        stdout?: string;
+      };
+      err.status = 134;
+      err.signal = undefined;
+      err.stderr = '';
+      err.stdout = '';
+      throw err;
+    });
+
+    const { _captureLogger } = await import('../../src/core/logger.js');
+    const cap = _captureLogger();
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await analyzeCommand(undefined, {});
+
+    expect(process.exitCode).toBe(134);
     expect(cap.records().some((r) => r.msg.includes('Analysis likely ran out of memory.'))).toBe(true);
     cap.restore();
   });
