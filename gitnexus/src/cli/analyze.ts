@@ -122,8 +122,10 @@ const childProcessLikelyOom = (err: unknown): boolean => {
   return e.status === 134 || e.signal === 'SIGABRT';
 };
 
-const maybeForceHeapOomForTest = (): void => {
+const maybeForceHeapOOMForTest = (): void => {
   if (process.env.GITNEXUS_TEST_FORCE_HEAP_OOM !== '1') return;
+  // Allocate JS strings (not Buffers) so memory pressure comes from V8 heap
+  // itself and reliably triggers "JavaScript heap out of memory" across Node.
   const chunks: string[] = [];
   for (;;) chunks.push('x'.repeat(1024 * 1024));
 };
@@ -249,7 +251,7 @@ export const shouldGenerateCommunitySkillFiles = (
 
 export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOptions) => {
   if (ensureHeap()) return;
-  maybeForceHeapOomForTest();
+  maybeForceHeapOOMForTest();
 
   // Install fatal handlers immediately after re-exec resolution so any
   // async error that escapes the try/catch below (#1169) surfaces with

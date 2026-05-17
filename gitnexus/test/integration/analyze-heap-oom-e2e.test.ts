@@ -34,9 +34,9 @@ describe('analyze OOM guidance (real child-process OOM)', () => {
       );
     }
 
-    const tmpParent = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-oom-e2e-repo-'));
-    const gitnexusHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-oom-e2e-home-'));
-    const repoPath = path.join(tmpParent, 'mini-repo');
+    const tempRepoParent = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-oom-e2e-repo-'));
+    const tempGitnexusHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-oom-e2e-home-'));
+    const repoPath = path.join(tempRepoParent, 'mini-repo');
 
     fs.cpSync(fixtureSource, repoPath, { recursive: true });
     spawnSync('git', ['init'], { cwd: repoPath, stdio: 'pipe' });
@@ -54,7 +54,7 @@ describe('analyze OOM guidance (real child-process OOM)', () => {
     });
 
     try {
-      const result = runAnalyzeWithForcedOom(repoPath, gitnexusHome);
+      const result = runAnalyzeWithForcedOom(repoPath, tempGitnexusHome);
       const combinedOutput = `${result.stderr}\n${result.stdout}`;
 
       expect(result.status).not.toBeNull();
@@ -67,8 +67,8 @@ describe('analyze OOM guidance (real child-process OOM)', () => {
         '(Windows: set NODE_OPTIONS=--max-old-space-size=24576 && gitnexus analyze [your-args])',
       );
     } finally {
-      fs.rmSync(tmpParent, { recursive: true, force: true });
-      fs.rmSync(gitnexusHome, { recursive: true, force: true });
+      fs.rmSync(tempRepoParent, { recursive: true, force: true });
+      fs.rmSync(tempGitnexusHome, { recursive: true, force: true });
     }
   }, 60_000);
 });
