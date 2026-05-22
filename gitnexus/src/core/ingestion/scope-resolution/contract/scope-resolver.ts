@@ -588,22 +588,38 @@ export interface ScopeResolver {
   readonly isFileLocalDef?: (def: SymbolDefinition) => boolean;
 
   /**
-   * Optional predicate to identify members that can only be dispatched
-   * through a class-name receiver, never through an instance receiver
-   * (Kotlin companion-object methods, Java/C# `static` methods, Python
-   * `@staticmethod`-decorated methods). When provided, the receiver-
-   * bound calls pass filters out static-only members at Case 4
-   * (instance-receiver dispatch) so `instance.companionMethod()` —
-   * which is a compile error in Kotlin and a code smell in others —
-   * does not emit a misleading `CALLS` edge.
+   * Optional predicate to identify members for which dispatch through
+   * an instance receiver is **invalid at the language level** — i.e.
+   * calling `instance.member()` would be a compile error or a
+   * type-system violation, even if a member of that name exists on
+   * the receiver's class. When provided, the receiver-bound calls
+   * pass filters out such members at Case 4 (instance-receiver
+   * dispatch) so the resolver does not emit a misleading `CALLS`
+   * edge for a call site the language itself would reject.
+   *
+   * **Reserved for the "instance receiver is invalid" semantic only.**
+   * Hooks for languages where static / class-level members are still
+   * legally callable through an instance (Python `@staticmethod`,
+   * JavaScript `static` methods accessed via the prototype chain in
+   * some lookup paths) should return `false` for those members — the
+   * filter would silently suppress legitimate edges otherwise. The
+   * canonical fit today is Kotlin companion-object methods, where
+   * `instance.companionMethod()` is a compile error.
    *
    * Case 2 (class-name receiver) is intentionally unaffected: a call
    * through the class name (`Foo.staticMethod()`) is a legitimate
-   * dispatch and the static-only filter would suppress it.
+   * dispatch.
    *
    * Languages without static-only semantics leave this undefined and
    * the legacy unfiltered behavior applies (every owned member of the
    * receiver class is a dispatch candidate).
+   *
+   * **Coverage caveat:** the filter is wired today only at Case 4
+   * (simple typeBinding receiver). Other instance-dispatch paths —
+   * Case 0 (compound receiver), Case 0.5 (implicit `this`), Case 3b
+   * (chain-typebinding), Case 5 (value-receiver bridge) — do not
+   * consult the hook yet. Tracking issue for extension is on the
+   * Kotlin migration parent tracker.
    */
   readonly isStaticOnly?: (def: SymbolDefinition) => boolean;
 

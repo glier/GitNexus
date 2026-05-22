@@ -1,13 +1,18 @@
 import type { ParsedFile, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import { isClassLike, populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
 
-/** Non-enumerable property name carrying the "this method can only be
- *  dispatched through the class name" marker for companion-promoted
- *  Kotlin methods. Set by `populateCompanionMembersOnEnclosingClass`;
+/** Property name carrying the "this method can only be dispatched
+ *  through the class name" marker for companion-promoted Kotlin
+ *  methods. Set by `populateCompanionMembersOnEnclosingClass`;
  *  consumed by `isKotlinStaticOnly` (the `ScopeResolver.isStaticOnly`
- *  hook). Treated as an internal side-channel — keep it off the shared
- *  `SymbolDefinition` interface to avoid contaminating other languages'
- *  type. */
+ *  hook). The marker is an in-memory side-channel kept off the shared
+ *  `SymbolDefinition` interface — adding a Kotlin-specific field to
+ *  the shared type would contaminate every other language's type. The
+ *  property is enumerable (plain bracket-assignment), which is fine
+ *  in practice because `SymbolDefinition` objects are not serialized
+ *  for MCP responses, graph nodes, or cross-thread messages — the
+ *  marker only flows from `populateKotlinOwners` to
+ *  `receiver-bound-calls.ts` Case 4 inside the same pipeline run. */
 const KOTLIN_STATIC_MARKER = '__kotlinCompanionStatic';
 
 interface KotlinStaticMarked {

@@ -7,28 +7,45 @@ import type { GraphNodeLookup } from '../../scope-resolution/graph-bridge/node-l
 import { isClassLike } from '../../scope-resolution/scope/walkers.js';
 import { kotlinProvider } from '../kotlin.js';
 import {
-  isKotlinStaticOnly,
   kotlinArityCompatibility,
   kotlinMergeBindings,
   populateKotlinOwners,
   resolveKotlinImportTarget,
   type KotlinResolveContext,
 } from './index.js';
+import { isKotlinStaticOnly } from './owners.js';
 
 /**
  * Kotlin scope resolver for RFC #909 Ring 3.
  *
- * Kotlin is intentionally registered but not yet listed in
- * `MIGRATED_LANGUAGES`, matching the Java migration pattern from #1482:
- * the resolver can run in shadow/forced mode, while production default
- * stays on the legacy DAG until registry-primary parity reaches the
- * RFC threshold. Forced mode currently passes 154/175 fixtures (88%),
- * including core import, receiver, companion, default-param, vararg,
- * constructor, local assignment-chain, and collection-iteration fixtures.
- * Remaining gaps are advanced TypeEnv behaviors such as smart casts,
- * cross-file iterable return propagation, method-chain fixpoint cases,
- * overload target-id selection, virtual dispatch, and interface default
- * method dispatch.
+ * **Migration status:** Kotlin is in `MIGRATED_LANGUAGES`. Default
+ * production resolution flows through the scope-resolution pipeline;
+ * the legacy DAG is consulted only when the per-language env var
+ * (`REGISTRY_PRIMARY_KOTLIN=0`) explicitly forces the legacy parity
+ * run for CI comparison.
+ *
+ * **Forced-mode parity (`REGISTRY_PRIMARY_KOTLIN=1`):** 181/181
+ * fixtures pass after the migration sub-issues #1758–#1763 and the
+ * companion/instance dispatch fix #1756 closed. Covers core import,
+ * receiver, companion, default-param, vararg, constructor, local
+ * assignment-chain, collection-iteration, smart casts
+ * (`when (x) { is T -> … }` and `if (x is T)` — #1758), cross-file
+ * iterable return propagation (#1759), single-level method-chain
+ * fixpoint receiver types (#1760), parameter-type-narrowed overload
+ * target-id selection (#1761), virtual dispatch via constructor RHS
+ * (`val x: Animal = Dog()` — #1762), interface default-method
+ * dispatch via implements-split MRO (#1763), and companion-object
+ * vs instance member dispatch (#1756) via the new `isStaticOnly`
+ * hook.
+ *
+ * **Legacy parity skip list:** `LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES.kotlin`
+ * in `test/integration/resolvers/helpers.ts` records scope-resolver-only
+ * correctness wins that the legacy DAG cannot replicate (today: the
+ * companion-vs-instance crossover assertion from #1756).
+ *
+ * **Lambda scopes (#1757)** are tracked as a follow-up improvement;
+ * the flip criteria from #1746 were relaxed at maintainer discretion
+ * after the test-baseline conditions were met.
  */
 export const kotlinScopeResolver: ScopeResolver = {
   language: SupportedLanguages.Kotlin,

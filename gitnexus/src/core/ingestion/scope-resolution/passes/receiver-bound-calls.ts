@@ -677,11 +677,13 @@ export function emitReceiverBoundCalls(
             handledSites.add(siteKey);
             continue;
           }
-          // Static-only filter (Kotlin companion methods, future
-          // `@staticmethod` / `static` semantics). Case 4 dispatches
-          // through an INSTANCE receiver, where invoking a class-bound
-          // member is invalid. Suppress the edge AND mark handled so
-          // `emitReferencesViaLookup` doesn't re-emit a wrong target.
+          // Static-only filter: class-bound members must not be
+          // dispatched through an INSTANCE receiver (Case 4). When the
+          // provider's `isStaticOnly` hook reports the candidate is
+          // only reachable via a class-name receiver, suppress the
+          // edge AND mark handled so `emitReferencesViaLookup` does
+          // not re-emit a wrong target. See `ScopeResolver.isStaticOnly`
+          // for the per-language contract.
           if (memberDef !== undefined && provider.isStaticOnly?.(memberDef) === true) {
             handledSites.add(siteKey);
             continue;

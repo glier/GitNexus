@@ -2105,10 +2105,17 @@ describe('Kotlin companion vs instance member dispatch (#1756)', () => {
     expect(logCall!.targetFilePath).toBe('App.kt');
   });
 
-  it('logger.log() in directLog() resolves to the instance log', () => {
+  it('makeLogger emits exactly 2 CALLS edges — Logger.create and logger.log, no extras', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fromMakeLogger = calls.filter((c) => c.source === 'makeLogger');
+    expect(fromMakeLogger.length).toBe(2);
+  });
+
+  it('logger.log() in directLog() resolves to the instance log on App.kt', () => {
     const calls = getRelationships(result, 'CALLS');
     const logCall = calls.find((c) => c.source === 'directLog' && c.target === 'log');
     expect(logCall).toBeDefined();
+    expect(logCall!.targetFilePath).toBe('App.kt');
   });
 
   it('crossover() invoking logger.create() on an instance emits NO CALLS edge', () => {
