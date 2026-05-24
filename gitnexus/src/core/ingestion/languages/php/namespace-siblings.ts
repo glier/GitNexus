@@ -40,30 +40,82 @@ interface PhpFileStructure {
 
 type PhpTree = ReturnType<ReturnType<typeof getPhpParser>['parse']>;
 
+const NAMESPACE_RE = /^\s*namespace\s+([\w\\]+)\s*[;{]/i;
+const HEREDOC_START_RE = /<<<\s*['"]?(\w+)['"]?\s*$/;
+
+/**
+ * Extract a PHP namespace declaration from raw source without tree-sitter.
+ *
+ * Single-pass line scanner that skips heredoc/nowdoc bodies, block
+ * comments, and single-line comments before matching. This avoids the
+ * false positives that a multiline regex produces when `namespace` appears
+ * inside a heredoc, nowdoc, string, or comment.
+ */
+export function extractNamespaceViaScanner(content: string): string {
+  const lines = content.split('\n');
+  let inBlockComment = false;
+  let heredocDelimiter: string | null = null;
+
+  for (const raw of lines) {
+    if (heredocDelimiter !== null) {
+      if (raw.trimEnd() === heredocDelimiter + ';' || raw.trimEnd() === heredocDelimiter) {
+        heredocDelimiter = null;
+      }
+      continue;
+    }
+
+    if (inBlockComment) {
+      if (raw.includes('*/')) {
+        inBlockComment = false;
+      }
+      continue;
+    }
+
+    if (raw.trimStart().startsWith('/*')) {
+      if (!raw.includes('*/')) {
+        inBlockComment = true;
+      }
+      continue;
+    }
+
+    let line = raw;
+    const slashIdx = line.indexOf('//');
+    const hashIdx = line.indexOf('#');
+    if (slashIdx >= 0 && (hashIdx < 0 || slashIdx < hashIdx)) {
+      line = line.slice(0, slashIdx);
+    } else if (hashIdx >= 0) {
+      line = line.slice(0, hashIdx);
+    }
+
+    const heredocMatch = raw.match(HEREDOC_START_RE);
+    if (heredocMatch) {
+      heredocDelimiter = heredocMatch[1];
+      continue;
+    }
+
+    const stripped = line.replace(/<\?php/gi, '').replace(/declare\s*\([^)]*\)\s*;?/gi, '');
+    const nsMatch = stripped.match(NAMESPACE_RE);
+    if (nsMatch) {
+      return nsMatch[1];
+    }
+  }
+
+  return '';
+}
+
 /**
  * Extract the declared namespace from a PHP file's source.
  * Uses the cached AST tree when available to avoid re-parsing.
  *
  * When no cached tree is available (worker-parsed files can't transfer
- * native Tree objects across MessageChannels), uses a regex fast path
+ * native Tree objects across MessageChannels), uses a line scanner
  * instead of re-parsing every file with tree-sitter. For 16K+ PHP files
  * this eliminates ~16K tree-sitter re-parses during the namespace-siblings
  * pass. See: https://github.com/abhigyanpatwari/GitNexus/issues/1741
  */
-function extractPhpFileStructure(content: string, cachedTree: unknown): PhpFileStructure {
-  // Fast path: regex extraction when no cached tree available.
-  // PHP namespace declarations follow a predictable pattern:
-  //   namespace Foo\Bar;   OR   namespace Foo\Bar { ... }
+export function extractPhpFileStructure(content: string, cachedTree: unknown): PhpFileStructure {
   if (!cachedTree) {
-    const match = content.match(/^\s*namespace\s+([\w\\]+)\s*[;{]/m);
-    if (match) {
-      return { namespace: match[1] };
-    }
-    const match2 = content.match(/namespace\s+([\w\\]+)\s*[;{]/);
-    if (match2) {
-      return { namespace: match2[1] };
-    }
-    return { namespace: '' };
+    return { namespace: extractNamespaceViaScanner(content) };
   }
 
   // Walk top-level nodes looking for namespace_definition.
