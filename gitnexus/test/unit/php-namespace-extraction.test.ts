@@ -69,13 +69,9 @@ describe('extractNamespaceViaScanner', () => {
   });
 
   it('ignores namespace inside block comment', () => {
-    const src = [
-      '<?php',
-      '/*',
-      ' * namespace Fake\\Comment;',
-      ' */',
-      'namespace App\\Real;',
-    ].join('\n');
+    const src = ['<?php', '/*', ' * namespace Fake\\Comment;', ' */', 'namespace App\\Real;'].join(
+      '\n',
+    );
     expect(extractNamespaceViaScanner(src)).toBe('App\\Real');
   });
 

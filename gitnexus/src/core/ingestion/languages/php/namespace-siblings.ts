@@ -28,8 +28,6 @@
 import type { BindingRef, ParsedFile, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { getPhpParser } from './query.js';
-import { getTreeSitterBufferSize } from '../../constants.js';
-import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 
 // ─── PHP file structure extraction ──────────────────────────────────────────
 
