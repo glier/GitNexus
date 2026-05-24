@@ -14,6 +14,10 @@
  * so all regressions are visible in a single CI run (equivalent to the
  * old workflow's fail-fast: false behavior).
  *
+ * Vitest output streams to the console in real time (stdio: 'inherit')
+ * so CI logs show the actual test output directly. No per-invocation
+ * timeout — the CI job-level timeout (30 min) is the outer guard.
+ *
  * Usage:
  *   npx tsx scripts/run-parity.ts
  *   npx tsx scripts/run-parity.ts --language python   # single language
@@ -28,11 +32,9 @@ import { MIGRATED_LANGUAGES } from '../src/core/ingestion/registry-primary-flag.
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 
-interface ParityResult {
+interface ParityFailure {
   lang: string;
   mode: 'legacy' | 'registry-primary';
-  passed: boolean;
-  output: string;
 }
 
 function envVarName(slug: string): string {
@@ -43,26 +45,17 @@ function testFilePath(slug: string): string {
   return `test/integration/resolvers/${slug}.test.ts`;
 }
 
-function runVitest(testFile: string, env: Record<string, string>): { ok: boolean; output: string } {
+function runVitest(testFile: string, env: Record<string, string>): boolean {
   try {
-    const output = execFileSync('npx', ['vitest', 'run', testFile], {
+    execFileSync('npx', ['vitest', 'run', testFile], {
       cwd: ROOT,
       env: { ...process.env, ...env },
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
+      stdio: 'inherit',
       shell: true,
-      // C++ resolver tests can take 130-150s on CI runners (template
-      // metaprogramming, ADL, SFINAE fixtures). 180s per invocation keeps
-      // headroom. Realistic total across all 9 languages is ~12 min;
-      // the CI job timeout (30 min) is the outer guard.
-      timeout: 180 * 1000,
     });
-    return { ok: true, output };
-  } catch (err: any) {
-    const stdout = (err.stdout as string) ?? '';
-    const stderr = (err.stderr as string) ?? '';
-    const combined = (stdout + '\n' + stderr).trim() || err.message || String(err);
-    return { ok: false, output: combined };
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -98,43 +91,36 @@ if (missingFiles.length > 0) {
 console.log(`Scope-resolution parity: ${languages.length} language(s)`);
 console.log(`Languages: ${languages.join(', ')}\n`);
 
-const results: ParityResult[] = [];
+const failures: ParityFailure[] = [];
 
 for (const lang of languages) {
   const file = testFilePath(lang);
   const envVar = envVarName(lang);
 
-  // Legacy DAG mode
-  console.log(`── ${lang} — legacy DAG (${envVar}=0) ──`);
-  const legacy = runVitest(file, { [envVar]: '0' });
-  results.push({ lang, mode: 'legacy', passed: legacy.ok, output: legacy.output });
-  console.log(legacy.ok ? '  ✓ PASSED' : '  ✗ FAILED');
+  console.log(`\n── ${lang} — legacy DAG (${envVar}=0) ──`);
+  if (!runVitest(file, { [envVar]: '0' })) {
+    failures.push({ lang, mode: 'legacy' });
+  }
 
-  // Registry-primary mode
-  console.log(`── ${lang} — registry-primary (${envVar}=1) ──`);
-  const registry = runVitest(file, { [envVar]: '1' });
-  results.push({ lang, mode: 'registry-primary', passed: registry.ok, output: registry.output });
-  console.log(registry.ok ? '  ✓ PASSED' : '  ✗ FAILED');
-
-  console.log();
+  console.log(`\n── ${lang} — registry-primary (${envVar}=1) ──`);
+  if (!runVitest(file, { [envVar]: '1' })) {
+    failures.push({ lang, mode: 'registry-primary' });
+  }
 }
 
 // Summary
-console.log('═══════════════════════════════════════');
+const total = languages.length * 2;
+const passed = total - failures.length;
+
+console.log('\n═══════════════════════════════════════');
 console.log('PARITY SUMMARY');
 console.log('═══════════════════════════════════════');
-
-const failures = results.filter((r) => !r.passed);
-const passes = results.filter((r) => r.passed);
-
-console.log(`Passed: ${passes.length}/${results.length}`);
+console.log(`Passed: ${passed}/${total}`);
 
 if (failures.length > 0) {
   console.log(`\nFAILURES (${failures.length}):`);
   for (const f of failures) {
     console.log(`  ✗ ${f.lang} [${f.mode}]`);
-    const lastLines = f.output.split('\n').slice(-10).join('\n');
-    console.log(`    ${lastLines.replace(/\n/g, '\n    ')}`);
   }
   process.exit(1);
 }
