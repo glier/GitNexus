@@ -51,10 +51,11 @@ function runVitest(testFile: string, env: Record<string, string>): { ok: boolean
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: true,
-      // TypeScript and C++ resolver tests can take 60-90s on CI runners.
-      // 120s per invocation × 18 worst-case = 36 min, but realistic total
-      // is ~11 min. The CI job timeout (30 min) is the outer guard.
-      timeout: 120 * 1000,
+      // C++ resolver tests can take 130-150s on CI runners (template
+      // metaprogramming, ADL, SFINAE fixtures). 180s per invocation keeps
+      // headroom. Realistic total across all 9 languages is ~12 min;
+      // the CI job timeout (30 min) is the outer guard.
+      timeout: 180 * 1000,
     });
     return { ok: true, output };
   } catch (err: any) {
