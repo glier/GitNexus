@@ -25,7 +25,7 @@ function jsonForScriptTag(obj) {
 
 const rawBackendUrl = process.env.GITNEXUS_BACKEND_URL ?? null;
 if (rawBackendUrl && !isValidUrl(rawBackendUrl)) {
-  const safeRaw = rawBackendUrl.replace(/[\r\n]/g, ' ').slice(0, 200);
+  const safeRaw = rawBackendUrl.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 200);
   console.warn(
     `[gitnexus-web] GITNEXUS_BACKEND_URL "${safeRaw}" is not a valid http/https URL -- ignoring.`,
   );
@@ -159,8 +159,9 @@ const server = createServer(async (req, res) => {
       stream.pipe(res);
     }
   } catch (error) {
+    console.error(error);
     res.writeHead(500);
-    res.end(error instanceof Error ? error.message : 'Internal server error');
+    res.end('Internal server error');
   }
 });
 

@@ -76,8 +76,9 @@ function killAndWait(proc) {
       resolve();
       return;
     }
-    proc.on('exit', resolve);
+    proc.once('exit', resolve);
     proc.kill();
+    if (proc.exitCode !== null) resolve();
   });
 }
 
