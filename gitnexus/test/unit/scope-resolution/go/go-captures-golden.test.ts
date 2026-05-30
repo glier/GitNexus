@@ -117,7 +117,11 @@ function buildSnapshot(): Snapshot {
   }
   snap['synthetic:dao-20'] = snapshotOf(generateDao(20), 'zz_generated.def_userdao.go');
   // Stable key order for deterministic JSON serialization.
-  return Object.fromEntries(Object.keys(snap).sort().map((k) => [k, snap[k]!]));
+  return Object.fromEntries(
+    Object.keys(snap)
+      .sort()
+      .map((k) => [k, snap[k]!]),
+  );
 }
 
 function formatGolden(snap: Snapshot): string {
