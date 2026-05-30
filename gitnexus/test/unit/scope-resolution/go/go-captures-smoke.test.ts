@@ -62,4 +62,93 @@ func main() {
     expect(tags).toContain('@reference.read');
     expect(tags).toContain('@reference.write');
   });
+
+  // ── Edge shapes the #1915 captured-node refactor reasons about but no
+  //    lang-resolution fixture exercises (issue #1848 follow-up U2). ──
+
+  it('captures a func_literal as a scope without synthesizing a receiver', () => {
+    const src = `
+package main
+
+func main() {
+  f := func() int { return 1 }
+  _ = f()
+}
+`;
+    const matches = emitGoScopeCaptures(src, 'main.go');
+    // The closure is captured as a @scope.function...
+    expect(matches.some((m) => m['@scope.function']?.text.startsWith('func()'))).toBe(true);
+    // ...but a func_literal has no receiver, so no self type-binding is synthesized.
+    expect(matches.every((m) => m['@type-binding.self'] === undefined)).toBe(true);
+  });
+
+  it('does not drop a var-form type assertion binding', () => {
+    // `var x int = e.(T)` anchors on a var_declaration, not a short_var_declaration,
+    // so isRawMultiAssignTypeBinding must NOT filter it (old findNodeAtRange path
+    // returned null -> false; the new anchor.type guard reproduces that).
+    const src = `
+package main
+
+func main() {
+  var x int = any(1).(int)
+  _ = x
+}
+`;
+    const assertion = emitGoScopeCaptures(src, 'main.go').find(
+      (m) => m['@type-binding.assertion'] !== undefined,
+    );
+    expect(assertion).toBeDefined();
+    expect(assertion!['@type-binding.name']?.text).toBe('x');
+  });
+
+  it('does not drop a var-form call-return binding', () => {
+    const src = `
+package main
+
+func NewThing() int { return 1 }
+
+func main() {
+  var y = NewThing()
+  _ = y
+}
+`;
+    const callReturn = emitGoScopeCaptures(src, 'main.go').find(
+      (m) => m['@type-binding.call-return'] !== undefined,
+    );
+    expect(callReturn).toBeDefined();
+    expect(callReturn!['@type-binding.name']?.text).toBe('y');
+  });
+
+  it('resolves a single unparenthesized import the same as a grouped one', () => {
+    // Exercises resolveImportNode's no-import_spec_list parent chain. NOTE: not
+    // redundant with go-imports.test.ts, which calls splitGoImportStatement
+    // directly and bypasses captures.ts / resolveImportNode.
+    const single = emitGoScopeCaptures(
+      `
+package main
+
+import "fmt"
+
+func main() { fmt.Println() }
+`,
+      'main.go',
+    );
+    const sources = single
+      .filter((m) => m['@import.source'] !== undefined)
+      .map((m) => m['@import.source']!.text);
+    expect(sources).toEqual(['fmt']);
+  });
+
+  it('captures a generic function declaration', () => {
+    const src = `
+package main
+
+func Map[T any](x T) T { return x }
+`;
+    const decl = emitGoScopeCaptures(src, 'main.go').find(
+      (m) => m['@declaration.function'] !== undefined,
+    );
+    expect(decl).toBeDefined();
+    expect(decl!['@declaration.name']?.text).toBe('Map');
+  });
 });
