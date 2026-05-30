@@ -66,9 +66,17 @@ func main() {
   // ── Edge shapes the #1915 captured-node refactor reasons about but no
   //    lang-resolution fixture exercises (issue #1848 follow-up U2). ──
 
-  it('captures a func_literal as a scope without synthesizing a receiver', () => {
+  it('synthesizes a receiver for a method but not for a func_literal scope', () => {
+    // Source has BOTH a real method and a closure. A weak "no @type-binding.self
+    // anywhere" assertion would pass even if the method_declaration receiver
+    // branch regressed (a closure-only fixture has none to lose); asserting the
+    // method's receiver IS present catches that regression.
     const src = `
 package main
+
+type User struct{ Name string }
+
+func (u *User) Save() { _ = u.Name }
 
 func main() {
   f := func() int { return 1 }
@@ -76,10 +84,13 @@ func main() {
 }
 `;
     const matches = emitGoScopeCaptures(src, 'main.go');
-    // The closure is captured as a @scope.function...
+    // The closure is still captured as a @scope.function...
     expect(matches.some((m) => m['@scope.function']?.text.startsWith('func()'))).toBe(true);
-    // ...but a func_literal has no receiver, so no self type-binding is synthesized.
-    expect(matches.every((m) => m['@type-binding.self'] === undefined)).toBe(true);
+    // ...and the method's receiver self-binding is synthesized (name + pointer-stripped type)...
+    const selves = matches.filter((m) => m['@type-binding.self'] !== undefined);
+    expect(selves).toHaveLength(1); // exactly one — from the method, not the closure
+    expect(selves[0]!['@type-binding.name']?.text).toBe('u');
+    expect(selves[0]!['@type-binding.type']?.text).toBe('User');
   });
 
   it('does not drop a var-form type assertion binding', () => {
