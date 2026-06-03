@@ -6,7 +6,7 @@ import type {
   ClassLikeNodeLabel,
   ExtractedClassSymbol,
 } from '../class-types.js';
-import { normalizeQualifiedName, splitQualifiedName } from '../utils/qualified-name.js';
+import { splitQualifiedName } from '../utils/qualified-name.js';
 
 const DEFAULT_SCOPE_NAME_NODE_TYPES = new Set([
   'nested_namespace_specifier',

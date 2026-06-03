@@ -208,8 +208,8 @@
     "digest": "34e07387fece6c1d2deb49c39fc2bfe0badfe8015dd1f7ae956d57ac98322a1d"
   },
   "ruby-nested-tail-collision/nested.rb": {
-    "captureGroups": 21,
-    "digest": "48a7c1268b9542cf6d1eed5f6bd5dd68964cc608eb7f73953811d7f29ec35917"
+    "captureGroups": 31,
+    "digest": "c48ebe5516a0faf50effbad0a19fe29be70c371b50ba9d6fa6ae3f6f708b3a4e"
   },
   "ruby-overload-dispatch/lib/app.rb": {
     "captureGroups": 10,

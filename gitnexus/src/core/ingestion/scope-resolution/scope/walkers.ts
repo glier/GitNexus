@@ -381,10 +381,7 @@ function resolveQualifiedInheritanceBase(
  * `NS.Other.Derived` this is `['NS', 'Other']`; empty for a file-scope child.
  * Used to build progressive-prefix lookup keys for relative qualified bases.
  */
-function enclosingScopeSegments(
-  startScope: ScopeId,
-  scopes: ScopeResolutionIndexes,
-): string[] {
+function enclosingScopeSegments(startScope: ScopeId, scopes: ScopeResolutionIndexes): string[] {
   const child = findEnclosingClassDef(startScope, scopes);
   const q = child?.qualifiedName;
   if (q === undefined || q.length === 0) return [];

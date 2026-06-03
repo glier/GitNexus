@@ -1569,30 +1569,36 @@ describe('Ruby inline module-nested same-tail collision — distinct nodes (issu
   // so outer_attr / other_attr both attach to whichever `Inner` was processed
   // last. Asserts each routes to its OWN qualified node by qualifiedName, with
   // exactly one (non-duplicated) edge. Registry-primary only.
-  pit('owns outer_attr / other_attr under their OWN qualified Inner node (same-tail attr_accessor, R7)', () => {
-    const hp = getRelationships(result, 'HAS_PROPERTY');
-    const ownerQnOf = (prop: string) => {
-      const e = hp.find((x) => x.target === prop);
-      expect(e, `HAS_PROPERTY -> ${prop}`).toBeDefined();
-      return result.graph.getNode(e!.rel.sourceId)?.properties.qualifiedName;
-    };
-    expect(ownerQnOf('outer_attr')).toBe('Outer.Inner');
-    expect(ownerQnOf('other_attr')).toBe('Other.Inner');
-    expect(hp.filter((x) => x.target === 'outer_attr')).toHaveLength(1);
-    expect(hp.filter((x) => x.target === 'other_attr')).toHaveLength(1);
-  });
+  pit(
+    'owns outer_attr / other_attr under their OWN qualified Inner node (same-tail attr_accessor, R7)',
+    () => {
+      const hp = getRelationships(result, 'HAS_PROPERTY');
+      const ownerQnOf = (prop: string) => {
+        const e = hp.find((x) => x.target === prop);
+        expect(e, `HAS_PROPERTY -> ${prop}`).toBeDefined();
+        return result.graph.getNode(e!.rel.sourceId)?.properties.qualifiedName;
+      };
+      expect(ownerQnOf('outer_attr')).toBe('Outer.Inner');
+      expect(ownerQnOf('other_attr')).toBe('Other.Inner');
+      expect(hp.filter((x) => x.target === 'outer_attr')).toHaveLength(1);
+      expect(hp.filter((x) => x.target === 'other_attr')).toHaveLength(1);
+    },
+  );
 
   // #1982 resolution-side: SAME-TAIL mixin owner identity (IMPLEMENTS).
-  pit('routes include OuterMix / OtherMix to their OWN qualified Inner owner (same-tail mixin, R7)', () => {
-    const impl = getRelationships(result, 'IMPLEMENTS');
-    const ownerQnOfMixin = (mixinName: string) => {
-      const e = impl.find((x) => x.target === mixinName);
-      expect(e, `IMPLEMENTS -> ${mixinName}`).toBeDefined();
-      return result.graph.getNode(e!.rel.sourceId)?.properties.qualifiedName;
-    };
-    expect(ownerQnOfMixin('OuterMix')).toBe('Outer.Inner');
-    expect(ownerQnOfMixin('OtherMix')).toBe('Other.Inner');
-  });
+  pit(
+    'routes include OuterMix / OtherMix to their OWN qualified Inner owner (same-tail mixin, R7)',
+    () => {
+      const impl = getRelationships(result, 'IMPLEMENTS');
+      const ownerQnOfMixin = (mixinName: string) => {
+        const e = impl.find((x) => x.target === mixinName);
+        expect(e, `IMPLEMENTS -> ${mixinName}`).toBeDefined();
+        return result.graph.getNode(e!.rel.sourceId)?.properties.qualifiedName;
+      };
+      expect(ownerQnOfMixin('OuterMix')).toBe('Outer.Inner');
+      expect(ownerQnOfMixin('OtherMix')).toBe('Other.Inner');
+    },
+  );
 });
 
 // Same fixture through the WORKER pool. The deferred note flagged that the worker
@@ -1604,26 +1610,33 @@ describe('Ruby inline module-nested same-tail collision — worker path parity (
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-nested-tail-collision'), () => {}, {
-      workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
-      workerPoolSize: 2,
-    });
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ruby-nested-tail-collision'),
+      () => {},
+      {
+        workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
+        workerPoolSize: 2,
+      },
+    );
   }, 120000);
 
   pit('genuinely used the worker pool for the same-tail Ruby fixture', () => {
     expect(result.usedWorkerPool).toBe(true);
   });
 
-  pit('owns outer_attr / other_attr under their OWN qualified Inner node on the worker path (no duplicate, R7)', () => {
-    const hp = getRelationships(result, 'HAS_PROPERTY');
-    const ownerQnOf = (prop: string) => {
-      const e = hp.find((x) => x.target === prop);
-      expect(e, `HAS_PROPERTY -> ${prop}`).toBeDefined();
-      return result.graph.getNode(e!.rel.sourceId)?.properties.qualifiedName;
-    };
-    expect(ownerQnOf('outer_attr')).toBe('Outer.Inner');
-    expect(ownerQnOf('other_attr')).toBe('Other.Inner');
-    expect(hp.filter((x) => x.target === 'outer_attr')).toHaveLength(1);
-    expect(hp.filter((x) => x.target === 'other_attr')).toHaveLength(1);
-  });
+  pit(
+    'owns outer_attr / other_attr under their OWN qualified Inner node on the worker path (no duplicate, R7)',
+    () => {
+      const hp = getRelationships(result, 'HAS_PROPERTY');
+      const ownerQnOf = (prop: string) => {
+        const e = hp.find((x) => x.target === prop);
+        expect(e, `HAS_PROPERTY -> ${prop}`).toBeDefined();
+        return result.graph.getNode(e!.rel.sourceId)?.properties.qualifiedName;
+      };
+      expect(ownerQnOf('outer_attr')).toBe('Outer.Inner');
+      expect(ownerQnOf('other_attr')).toBe('Other.Inner');
+      expect(hp.filter((x) => x.target === 'outer_attr')).toHaveLength(1);
+      expect(hp.filter((x) => x.target === 'other_attr')).toHaveLength(1);
+    },
+  );
 });
