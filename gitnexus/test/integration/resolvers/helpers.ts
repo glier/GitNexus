@@ -499,6 +499,14 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'owns outer_field under Outer.Inner (struct field via the main HAS_PROPERTY path)',
     'genuinely used the worker pool (guards against silent sequential fallback)',
     'materializes two distinct Struct nodes and owns each method correctly (R7)',
+    // #1982 RESOLUTION-side same-tail heritage. Unlike the structure-phase
+    // entries above, these exercise the registry-primary inheritance resolver
+    // (preEmitInheritanceEdges → resolveInheritanceBaseInScope qualified-first),
+    // which the legacy DAG does not use — so they are registry-primary-only by
+    // design and skipped on the legacy leg per the #1978/#1982 policy.
+    'resolves DerivedA : Outer::Inner → EXTENDS the Outer.Inner node',
+    'resolves DerivedB : Other::Inner → EXTENDS the Other.Inner node (not Outer.Inner)',
+    'resolves DerivedB : Other::Inner → EXTENDS Other.Inner on the worker path (#1982: rawQualifiedName survives worker serialization)',
   ]),
 };
 

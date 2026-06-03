@@ -24,6 +24,7 @@ import type { BindingRef, ParsedFile, ScopeId, SymbolDefinition, TypeRef } from 
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
+import { normalizeQualifiedName } from '../../utils/qualified-name.js';
 
 const EMPTY_BINDINGS: readonly BindingRef[] = Object.freeze([]);
 
@@ -309,11 +310,86 @@ export function resolveInheritanceBaseInScope(
   startScope: ScopeId,
   baseName: string,
   scopes: ScopeResolutionIndexes,
+  rawQualifiedName?: string,
 ): SymbolDefinition | undefined {
+  // #1982: when the source wrote a qualified base (`Other::Inner`), resolve it
+  // against the full-path QualifiedNameIndex FIRST, so a same-tail nested base
+  // binds to the matching sibling instead of the first-inserted one that the
+  // simple-tail scope walk picks. Falls through to the existing walk when the
+  // base is unqualified, unknown, or the qualified lookup can't pick a unique
+  // winner — so unqualified bases and the cross-file single-candidate case are
+  // unchanged.
+  if (rawQualifiedName !== undefined) {
+    const qualified = resolveQualifiedInheritanceBase(startScope, rawQualifiedName, scopes);
+    if (qualified !== undefined) return qualified;
+  }
   return (
     findClassBindingInScope(startScope, baseName, scopes) ??
     resolveAmbiguousInheritanceBaseViaImports(startScope, baseName, scopes)
   );
+}
+
+/**
+ * Resolve a qualified inheritance base (`Other::Inner`, `ns::Base`) against the
+ * full-path `QualifiedNameIndex` (keyed by `def.qualifiedName`, which carries
+ * the promoted dotted path post-`populateOwners`). Tries the referencing site's
+ * enclosing-scope segments as progressive prefixes (longest first) before the
+ * root-anchored qualifier, so a *relative* base like `Outer::Inner` written
+ * inside `namespace NS` resolves to the root-anchored key `NS.Outer.Inner`.
+ * Returns a unique class-like def, or `undefined` when the base is unqualified,
+ * unknown, or genuinely ambiguous at a key (refuse-on-tie — never guess; a
+ * wrong EXTENDS edge silently corrupts impact analysis).
+ */
+function resolveQualifiedInheritanceBase(
+  startScope: ScopeId,
+  rawQualifiedName: string,
+  scopes: ScopeResolutionIndexes,
+): SymbolDefinition | undefined {
+  const normalized = normalizeQualifiedName(rawQualifiedName);
+  // No qualifier after normalization → nothing the simple-tail walk doesn't do.
+  if (normalized.length === 0 || !normalized.includes('.')) return undefined;
+
+  const enclosing = enclosingScopeSegments(startScope, scopes);
+  // Candidate keys: longest enclosing prefix first, then the root-anchored form.
+  const keys: string[] = [];
+  for (let i = enclosing.length; i >= 1; i--) {
+    keys.push([...enclosing.slice(0, i), normalized].join('.'));
+  }
+  keys.push(normalized);
+
+  for (const key of keys) {
+    const ids = scopes.qualifiedNames.get(key);
+    if (ids.length === 0) continue;
+    let unique: SymbolDefinition | undefined;
+    let count = 0;
+    for (const id of ids) {
+      const def = scopes.defs.get(id);
+      if (def !== undefined && isClassLike(def.type)) {
+        unique = def;
+        count++;
+      }
+    }
+    if (count === 1) return unique;
+    if (count > 1) return undefined; // genuine tie at this key → refuse, don't guess
+  }
+  return undefined;
+}
+
+/**
+ * Enclosing scope segments of an inheritance site, derived from the deriving
+ * (child) class def's `qualifiedName` minus its own tail. For child
+ * `NS.Other.Derived` this is `['NS', 'Other']`; empty for a file-scope child.
+ * Used to build progressive-prefix lookup keys for relative qualified bases.
+ */
+function enclosingScopeSegments(
+  startScope: ScopeId,
+  scopes: ScopeResolutionIndexes,
+): string[] {
+  const child = findEnclosingClassDef(startScope, scopes);
+  const q = child?.qualifiedName;
+  if (q === undefined || q.length === 0) return [];
+  const segs = q.split('.').filter(Boolean);
+  return segs.slice(0, -1);
 }
 
 /**

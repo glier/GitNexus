@@ -3860,4 +3860,53 @@ describe('C++ inline nested same-tail collision — worker path parity (issue #1
     expect(ownerQn('from_outer')).toBe('Outer.Inner');
     expect(ownerQn('from_other')).toBe('Other.Inner');
   });
+
+  it('resolves DerivedB : Other::Inner → EXTENDS Other.Inner on the worker path (#1982: rawQualifiedName survives worker serialization)', () => {
+    const e = getRelationships(result, 'EXTENDS').find(
+      (x) => result.graph.getNode(x.rel.sourceId)?.properties.qualifiedName === 'DerivedB',
+    );
+    expect(e, 'DerivedB EXTENDS edge (worker path)').toBeDefined();
+    expect(e!.rel.targetId).toContain('Other.Inner');
+    expect(e!.rel.targetId).not.toContain('Outer.Inner');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Inline nested same-tail HERITAGE — qualified base resolution (issue #1982)
+//
+// `struct DerivedA : Outer::Inner` + `struct DerivedB : Other::Inner` must each
+// resolve EXTENDS to the MATCHING nested node. On the registry-primary base the
+// qualifier is discarded (cpp/captures.ts emits the bare tail `Inner`), so
+// resolveInheritanceBaseInScope sees an ambiguous same-tail base. Asserts the
+// resolved EXTENDS endpoint's id contains the right qn (KTD-4: assert on the
+// node id, not the property). Registry-primary only (legacy leg expected-fail).
+// ---------------------------------------------------------------------------
+describe('C++ inline nested same-tail heritage — qualified base (issue #1982)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-nested-tail-collision'), () => {});
+  }, 60000);
+
+  const extendsTargetIdOf = (childQn: string): string | undefined => {
+    const ext = getRelationships(result, 'EXTENDS');
+    const e = ext.find(
+      (x) => result.graph.getNode(x.rel.sourceId)?.properties.qualifiedName === childQn,
+    );
+    return e?.rel.targetId;
+  };
+
+  it('resolves DerivedA : Outer::Inner → EXTENDS the Outer.Inner node', () => {
+    const tid = extendsTargetIdOf('DerivedA');
+    expect(tid, 'DerivedA EXTENDS endpoint').toBeDefined();
+    expect(tid).toContain('Outer.Inner');
+    expect(tid).not.toContain('Other.Inner');
+  });
+
+  it('resolves DerivedB : Other::Inner → EXTENDS the Other.Inner node (not Outer.Inner)', () => {
+    const tid = extendsTargetIdOf('DerivedB');
+    expect(tid, 'DerivedB EXTENDS endpoint').toBeDefined();
+    expect(tid).toContain('Other.Inner');
+    expect(tid).not.toContain('Outer.Inner');
+  });
 });

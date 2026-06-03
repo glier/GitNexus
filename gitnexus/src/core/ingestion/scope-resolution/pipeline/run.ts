@@ -131,7 +131,12 @@ function preEmitInheritanceEdges(
       handledSites.add(siteKey);
     }
 
-    const targetDef = resolveInheritanceBaseInScope(site.inScope, site.name, scopes);
+    const targetDef = resolveInheritanceBaseInScope(
+      site.inScope,
+      site.name,
+      scopes,
+      site.rawQualifiedName,
+    );
     if (targetDef === undefined) continue;
 
     const callerClass = findEnclosingClassDef(site.inScope, scopes);

@@ -515,9 +515,24 @@ function emitCppInheritanceCaptures(root: SyntaxNode, out: CaptureMatch[], fileP
           }
           const baseName = extractBaseLookupName(base.node);
           if (baseName.length === 0) continue;
+          // Preserve the qualified form (`Other::Inner`, template-stripped) when the
+          // source wrote one, so a same-tail nested base resolves to the matching
+          // qualified node instead of the first-inserted same-tail one (#1982). The
+          // bare `@reference.name` stays the V1 simple-name contract; the qualifier
+          // is an additive sidecar resolution tries first (see resolveInheritanceBaseInScope).
+          const qualifiedBaseName = extractQualifiedBaseName(base.node);
           out.push({
             '@reference.inherits': nodeToCapture('@reference.inherits', base.node),
             '@reference.name': syntheticCapture('@reference.name', base.node, baseName),
+            ...(qualifiedBaseName.length > 0 && qualifiedBaseName !== baseName
+              ? {
+                  '@reference.qualified-name': syntheticCapture(
+                    '@reference.qualified-name',
+                    base.node,
+                    qualifiedBaseName,
+                  ),
+                }
+              : {}),
           });
         }
       }
@@ -734,6 +749,41 @@ function extractBaseLookupName(baseNode: SyntaxNode): string {
       const nested = extractBaseLookupName(child);
       if (nested.length > 0) return nested;
     }
+  }
+  return '';
+}
+
+/**
+ * Like `extractBaseLookupName` but PRESERVES the namespace/class qualifier
+ * (`Other::Inner`, `ns::v1::Base`) while stripping template arguments
+ * (`ns::Base<T>` → `ns::Base`). Returns `''` for shapes it can't qualify, and
+ * returns the bare name unchanged for an unqualified base (the emit site then
+ * skips the sidecar capture). Powers `@reference.qualified-name` so #1982
+ * resolution can pick the matching same-tail nested base via the full-path
+ * QualifiedNameIndex instead of the first-inserted same-tail sibling.
+ */
+function extractQualifiedBaseName(baseNode: SyntaxNode): string {
+  if (baseNode.type === 'template_type') {
+    const nameNode = baseNode.childForFieldName('name');
+    return nameNode !== null ? extractQualifiedBaseName(nameNode) : '';
+  }
+  if (baseNode.type === 'qualified_identifier') {
+    // No template args anywhere → the raw text already IS the qualified name.
+    if (!baseNode.text.includes('<')) return baseNode.text;
+    // Template args present: reconstruct scope::name, recursing to strip them.
+    const scopeNode = baseNode.childForFieldName('scope');
+    const nameNode = baseNode.childForFieldName('name');
+    const left = scopeNode !== null ? extractQualifiedBaseName(scopeNode) : '';
+    const right = nameNode !== null ? extractQualifiedBaseName(nameNode) : '';
+    if (left.length > 0 && right.length > 0) return `${left}::${right}`;
+    return right.length > 0 ? right : left;
+  }
+  if (
+    baseNode.type === 'namespace_identifier' ||
+    baseNode.type === 'type_identifier' ||
+    baseNode.type === 'identifier'
+  ) {
+    return baseNode.text;
   }
   return '';
 }
