@@ -27,13 +27,11 @@ const isLocalValueCandidate = (node: GraphNode): boolean => {
   return node.properties.scope === 'block';
 };
 
-const isFileDefinesEdgeToCandidate = (
-  graph: KnowledgeGraph,
-  rel: GraphRelationship,
-  candidateId: string,
-): boolean => {
+// True when `rel` is the structural `File -> DEFINES -> candidate` edge. Callers
+// guard on the candidate already being the edge target, so only the source label
+// needs checking here.
+const isFileDefinesEdge = (graph: KnowledgeGraph, rel: GraphRelationship): boolean => {
   if (rel.type !== 'DEFINES') return false;
-  if (rel.targetId !== candidateId) return false;
   return graph.getNode(rel.sourceId)?.label === 'File';
 };
 
@@ -54,14 +52,16 @@ export const pruneLocalValueSymbols = (
 
   const candidatesWithSemanticEdges = new Set<string>();
   for (const rel of graph.iterRelationships()) {
+    // Any outgoing edge from a candidate is a semantic edge: the only structural
+    // edge a block-local value symbol carries is the incoming File -> DEFINES, on
+    // which the candidate is the target, never the source.
     if (candidateIds.has(rel.sourceId)) {
-      if (!isFileDefinesEdgeToCandidate(graph, rel, rel.sourceId)) {
-        candidatesWithSemanticEdges.add(rel.sourceId);
-      }
+      candidatesWithSemanticEdges.add(rel.sourceId);
     }
 
+    // An incoming edge is semantic unless it is the structural File -> DEFINES.
     if (candidateIds.has(rel.targetId)) {
-      if (!isFileDefinesEdgeToCandidate(graph, rel, rel.targetId)) {
+      if (!isFileDefinesEdge(graph, rel)) {
         candidatesWithSemanticEdges.add(rel.targetId);
       }
     }

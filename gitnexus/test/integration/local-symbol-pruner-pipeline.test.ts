@@ -9,10 +9,10 @@ const describeIfWorkerBuilt = distWorkerExists() ? describe : describe.skip;
 
 let tmpDirs: string[] = [];
 
-const makeRepo = (source: string): string => {
+const makeRepo = (source: string, filename = 'sample.ts'): string => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-local-prune-'));
   tmpDirs.push(dir);
-  fs.writeFileSync(path.join(dir, 'sample.ts'), source, 'utf-8');
+  fs.writeFileSync(path.join(dir, filename), source, 'utf-8');
   return dir;
 };
 
@@ -67,5 +67,41 @@ class Client {
       return source?.properties.name === 'run' && target?.properties.name === 'send';
     });
     expect(keepsResolvedClientCall).toBe(true);
+  });
+
+  it('keeps Python class-level constants while pruning function-locals', async () => {
+    // Regression: tree-sitter-python models the class body as a `block` node, so
+    // `determineScope` classified an untyped class attribute as block-scope. Python
+    // emits such assignments as `Variable` (the `@definition.variable` capture), and
+    // value labels get no owner edge (needsOwner excludes them) — only File->DEFINES.
+    // The prune pass would therefore silently delete unreferenced class attributes.
+    // A class-level symbol is NOT a function-local and must survive.
+    const repo = makeRepo(
+      `MODULE_CONST = 1
+
+
+class Settings:
+    MAX_SIZE = 100
+
+
+def run():
+    boring = 1
+    return boring
+`,
+      'sample.py',
+    );
+
+    const result = await runPipelineFromRepo(repo, () => {}, {
+      skipGraphPhases: true,
+      workerPoolSize: 1,
+      workerUrlForTest: DIST_WORKER_URL,
+    });
+
+    // Unreferenced class-level attribute must survive the prune.
+    expect(findNode(result, 'Variable', 'MAX_SIZE')).toBeDefined();
+    // Module-level symbol is preserved as before.
+    expect(findNode(result, 'Variable', 'MODULE_CONST')).toBeDefined();
+    // Genuine function-local is still pruned.
+    expect(findNode(result, 'Variable', 'boring')).toBeUndefined();
   });
 });

@@ -21,7 +21,9 @@ export const pruneLocalSymbolsPhase: PipelinePhase<PruneLocalSymbolsOutput> = {
   deps: ['scopeResolution'],
 
   async execute(ctx: PipelineContext): Promise<PruneLocalSymbolsOutput> {
-    const stats = pruneLocalValueSymbols(ctx.graph);
+    const stats = pruneLocalValueSymbols(ctx.graph, {
+      keepLocalValueSymbols: ctx.options?.keepLocalValueSymbols,
+    });
 
     if (isDev && !stats.skippedByEnv && stats.prunedNodes > 0) {
       logger.info(`Pruned ${stats.prunedNodes}/${stats.candidateNodes} inert local value symbols`);

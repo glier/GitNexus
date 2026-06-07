@@ -42,7 +42,12 @@ import {
 } from './pipeline-phases/index.js';
 
 export interface PipelineOptions {
-  /** Skip MRO, community detection, and process extraction for faster test runs. */
+  /**
+   * Skip MRO, community detection, and process extraction for faster test runs.
+   * The `pruneLocalSymbols` phase still runs — it is graph construction (it cleans
+   * up inert local symbols), not graph analysis — so set `keepLocalValueSymbols`
+   * to retain those nodes under `skipGraphPhases`.
+   */
   skipGraphPhases?: boolean;
   /**
    * Request parsing with the worker pool disabled. The sequential parser was
@@ -115,6 +120,14 @@ export interface PipelineOptions {
    * without leaking `process.env` state across invocations.
    */
   chunkByteBudget?: number;
+  /**
+   * Keep inert block-local value symbols (Const/Variable/Static) that the
+   * `pruneLocalSymbols` phase would otherwise drop. Mirrors the
+   * `GITNEXUS_KEEP_LOCAL_VALUE_SYMBOLS` env var, but threaded per-call so
+   * long-running hosts (eval-server, MCP daemon) can opt out without leaking
+   * `process.env` state across invocations. When undefined, the env var decides.
+   */
+  keepLocalValueSymbols?: boolean;
 }
 
 // ── Phase registry ─────────────────────────────────────────────────────────

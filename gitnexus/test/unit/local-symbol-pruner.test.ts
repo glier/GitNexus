@@ -106,6 +106,36 @@ describe('pruneLocalValueSymbols', () => {
     expect(graph.relationshipCount).toBe(2);
   });
 
+  it('keeps block-scope value symbols that are the source of an outgoing edge', () => {
+    const graph = createKnowledgeGraph();
+    graph.addNode(fileNode());
+    graph.addNode(node('Element:thing', 'CodeElement'));
+    graph.addNode(node('Const:config', 'Const', { scope: 'block' }));
+    graph.addRelationship(rel('rel:file-def', 'file:src/app.ts', 'Const:config'));
+    // Candidate is the SOURCE of an outgoing DEFINES edge — any outgoing edge is
+    // semantic, so the node must be kept (guards the source-branch simplification).
+    graph.addRelationship(rel('rel:out', 'Const:config', 'Element:thing', 'DEFINES'));
+
+    const stats = pruneLocalValueSymbols(graph);
+
+    expect(stats.prunedNodes).toBe(0);
+    expect(stats.keptWithSemanticEdges).toBe(1);
+    expect(graph.getNode('Const:config')).toBeDefined();
+  });
+
+  it('does not treat value symbols without a scope property as candidates', () => {
+    const graph = createKnowledgeGraph();
+    graph.addNode(fileNode());
+    graph.addNode(node('Const:noScope', 'Const'));
+    graph.addRelationship(rel('rel:def', 'file:src/app.ts', 'Const:noScope'));
+
+    const stats = pruneLocalValueSymbols(graph);
+
+    expect(stats.candidateNodes).toBe(0);
+    expect(stats.prunedNodes).toBe(0);
+    expect(graph.getNode('Const:noScope')).toBeDefined();
+  });
+
   it('prunes block-scope value symbols even when parser metadata marks them exported', () => {
     const graph = createKnowledgeGraph();
     graph.addNode(fileNode());
@@ -183,5 +213,27 @@ describe('pruneLocalSymbolsPhase', () => {
     expect(pruneLocalSymbolsPhase.deps).toEqual(['scopeResolution']);
     expect(stats.prunedNodes).toBe(1);
     expect(graph.getNode('Const:tmp')).toBeUndefined();
+  });
+
+  it('honors the keepLocalValueSymbols option without reading process.env', async () => {
+    const graph = createKnowledgeGraph();
+    graph.addNode(fileNode());
+    graph.addNode(node('Const:tmp', 'Const', { scope: 'block' }));
+    graph.addRelationship(rel('rel:def', 'file:src/app.ts', 'Const:tmp'));
+
+    const stats = await pruneLocalSymbolsPhase.execute(
+      {
+        repoPath: '/repo',
+        graph,
+        onProgress: () => {},
+        pipelineStart: Date.now(),
+        options: { keepLocalValueSymbols: true },
+      },
+      new Map(),
+    );
+
+    expect(stats.skippedByEnv).toBe(true);
+    expect(stats.prunedNodes).toBe(0);
+    expect(graph.getNode('Const:tmp')).toBeDefined();
   });
 });
