@@ -1,4 +1,19 @@
-import { afterAll, beforeAll, describe, it, expect } from 'vitest';
+import { afterAll, beforeAll, describe, it, expect, vi } from 'vitest';
+
+// The logger is a Proxy with no `set` trap, so vi.spyOn can't patch it.
+// Mock the module and expose `warn` as a countable spy (other levels no-op).
+const warnSpy = vi.fn();
+vi.mock('../../src/core/logger.js', () => ({
+  logger: {
+    debug: () => {},
+    info: () => {},
+    warn: (...args: unknown[]) => warnSpy(...args),
+    error: () => {},
+    trace: () => {},
+    fatal: () => {},
+  },
+}));
+
 import {
   extractRepoName,
   getCloneDir,
@@ -9,6 +24,7 @@ import {
   normalizeGitUrlForCompare,
   assertRemoteMatchesRequestedUrl,
   isAzureDevOpsUrl,
+  warnIfInsecureAzureConfig,
 } from '../../src/server/git-clone.js';
 import path from 'node:path';
 import os from 'node:os';
@@ -537,6 +553,45 @@ describe('git-clone', () => {
     it('does not over-match a lookalike host with a trailing label', () => {
       expect(isAzureDevOpsUrl('https://dev.azure.com.evil.com/org/proj/_git/repo')).toBe(false);
       expect(isAzureDevOpsUrl('https://evilvisualstudio.com/project/_git/repo')).toBe(false);
+    });
+  });
+
+  describe('cleartext-credential warnings', () => {
+    it('warns when injecting a credential over cleartext http://', () => {
+      warnSpy.mockClear();
+      buildGitEnv({}, { token: 'ghp_x', url: 'http://github.com/o/r' });
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not warn when injecting over https://', () => {
+      warnSpy.mockClear();
+      buildGitEnv({}, { token: 'ghp_x', url: 'https://github.com/o/r' });
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('does not warn over http:// when no credential is injected', () => {
+      warnSpy.mockClear();
+      // gitlab host is not in the token allowlist and no Azure PAT is set,
+      // so nothing is injected — and nothing is warned about.
+      buildGitEnv({}, { token: 'ghp_x', url: 'http://gitlab.com/o/r' });
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('warnIfInsecureAzureConfig warns for http AZURE_DEVOPS_URL, not https', () => {
+      const prev = process.env.AZURE_DEVOPS_URL;
+      warnSpy.mockClear();
+      try {
+        process.env.AZURE_DEVOPS_URL = 'http://tfs.corp.example';
+        warnIfInsecureAzureConfig();
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+        warnSpy.mockClear();
+        process.env.AZURE_DEVOPS_URL = 'https://tfs.corp.example';
+        warnIfInsecureAzureConfig();
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        if (prev === undefined) delete process.env.AZURE_DEVOPS_URL;
+        else process.env.AZURE_DEVOPS_URL = prev;
+      }
     });
   });
 

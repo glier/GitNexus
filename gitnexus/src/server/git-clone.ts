@@ -270,6 +270,27 @@ export function isAzureDevOpsUrl(url: string): boolean {
   }
 }
 
+/**
+ * One-time startup warning when AZURE_DEVOPS_URL is configured over cleartext
+ * http:// — the Azure DevOps PAT would then be sent unencrypted on every
+ * clone. Self-hosted instances that only serve http are still supported (we
+ * do not refuse), but operators rarely read request-time logs, so surface it
+ * at boot too. Call once from server startup.
+ */
+export function warnIfInsecureAzureConfig(): void {
+  const base = process.env.AZURE_DEVOPS_URL;
+  if (!base) return;
+  try {
+    if (new URL(base).protocol === 'http:') {
+      logger.warn(
+        'AZURE_DEVOPS_URL is configured over cleartext http:// — the Azure DevOps PAT will be sent unencrypted. Prefer https:// where your instance supports it.',
+      );
+    }
+  } catch {
+    /* invalid AZURE_DEVOPS_URL — isAzureDevOpsUrl already tolerates this */
+  }
+}
+
 export function buildCloneArgs(url: string, targetDir: string): string[] {
   return ['clone', '--depth', '1', '--', url, targetDir];
 }
@@ -540,6 +561,25 @@ function buildExtraHeaderKey(url: string): string | undefined {
 }
 
 /**
+ * Warn (do not block) when a credential is about to be sent over cleartext
+ * http://. Base64 is encoding, not encryption, so an on-path observer can
+ * read the PAT. We keep http:// working for self-hosted Azure DevOps Server.
+ */
+function warnIfCleartextCredential(url?: string): void {
+  if (!url) return;
+  try {
+    const u = new URL(url);
+    if (u.protocol === 'http:') {
+      logger.warn(
+        `Sending a git credential over cleartext http:// (${u.host}) — base64 is not encryption. Prefer https:// where the host supports it.`,
+      );
+    }
+  } catch {
+    /* resolver already validated the URL */
+  }
+}
+
+/**
  * Build the spawn env for `git`. Suppresses credential prompts and, when a
  * credential resolves (see resolveGitCredential), injects a single
  * host-scoped Authorization header via the `GIT_CONFIG_*` env protocol
@@ -577,6 +617,7 @@ export function buildGitEnv(
     env.GIT_CONFIG_COUNT = String(base + 1);
     env[`GIT_CONFIG_KEY_${base}`] = key;
     env[`GIT_CONFIG_VALUE_${base}`] = `Authorization: Basic ${credential}`;
+    warnIfCleartextCredential(options?.url);
   }
 
   return env;

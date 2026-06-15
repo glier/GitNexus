@@ -33,7 +33,12 @@ import { mountMCPEndpoints } from './mcp-http.js';
 import { fileURLToPath } from 'url';
 import { JobManager } from './analyze-job.js';
 import { assertString, escapeRegExp, BadRequestError, createRouteLimiter } from './validation.js';
-import { extractRepoName, getCloneDir, cloneOrPull } from './git-clone.js';
+import {
+  extractRepoName,
+  getCloneDir,
+  cloneOrPull,
+  warnIfInsecureAzureConfig,
+} from './git-clone.js';
 import { createAnalyzeUploadHandler } from './analyze-upload.js';
 import { createLocalhostOriginGuard, normalizeBoundHost } from './middleware.js';
 import { createLaunchAnalysisWorker } from './analyze-launch.js';
@@ -674,6 +679,10 @@ export const handleQueryRequest = async (
 };
 
 export const createServer = async (port: number, host: string = '127.0.0.1') => {
+  // Surface a cleartext Azure DevOps PAT config at boot (operators rarely
+  // read per-request logs). Warn-only — http:// self-hosted stays supported.
+  warnIfInsecureAzureConfig();
+
   const app = express();
   app.disable('x-powered-by');
 
