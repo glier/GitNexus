@@ -268,23 +268,6 @@ export function isAzureDevOpsUrl(url: string): boolean {
   }
 }
 
-/**
- * Build git `-c http.extraHeader=...` arguments that inject a Basic Auth
- * header when the URL targets an Azure DevOps instance and
- * `AZURE_DEVOPS_PAT` is set.  Returns an empty array otherwise.
- *
- * The `-c` args are prepended to the git command so they appear before
- * the `--` separator (option territory), and the PAT is never written to
- * `.git/config` — it is scoped to the single git invocation.
- */
-function buildAuthArgs(url: string): string[] {
-  if (!isAzureDevOpsUrl(url)) return [];
-  const pat = process.env.AZURE_DEVOPS_PAT;
-  if (!pat) return [];
-  const base64 = Buffer.from(`:${pat}`).toString('base64');
-  return ['-c', `http.extraHeader=Authorization: Basic ${base64}`];
-}
-
 export function buildCloneArgs(url: string, targetDir: string): string[] {
   return ['clone', '--depth', '1', '--', url, targetDir];
 }
@@ -474,13 +457,80 @@ export async function cloneOrPull(
 }
 
 /**
- * Build the spawn env for `git`. Injects an Authorization header via the
- * standard `GIT_CONFIG_*` env protocol (git ≥2.31) when a token is supplied,
- * so credentials never appear in argv or the URL. Exported for unit tests.
+ * Resolve at most ONE git credential for a clone/pull, by server-side policy
+ * keyed on the clone host against a fixed allowlist (never a free-form user
+ * toggle):
+ *   1. a per-request GitHub PAT — only for github.com / www.github.com;
+ *   2. else the server's AZURE_DEVOPS_PAT — only for Azure DevOps hosts;
+ *   3. else none.
+ * The two host sets are disjoint, so at most one credential ever applies; the
+ * GitHub token taking precedence is deterministic for the pathological case
+ * where AZURE_DEVOPS_URL is itself configured to a github.com host. Returns
+ * the base64 of the Basic-auth `user:secret` pair, or undefined.
+ */
+function resolveGitCredential(options?: { token?: string; url?: string }): string | undefined {
+  const url = options?.url;
+  if (!url) return undefined;
+
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return undefined;
+  }
+
+  // 1. Per-request GitHub PAT — github.com only (mirrors the /api/analyze
+  //    host-bind so the user's token is never sent off github.com).
+  if (options.token && (host === 'github.com' || host === 'www.github.com')) {
+    return Buffer.from(`x-access-token:${options.token}`).toString('base64');
+  }
+
+  // 2. Server-configured Azure DevOps PAT — Azure hosts only.
+  const azurePat = process.env.AZURE_DEVOPS_PAT;
+  if (azurePat && isAzureDevOpsUrl(url)) {
+    return Buffer.from(`:${azurePat}`).toString('base64');
+  }
+
+  return undefined;
+}
+
+/**
+ * Build the host-scoped git config key `http.<origin+path>.extraHeader` from
+ * the raw clone URL, so the Authorization header is attached only to the
+ * intended origin (and its clone sub-requests like /info/refs), never a
+ * redirect target. Derived from the SAME raw URL git clones from — not the
+ * normalize-for-compare form, which strips `.git` and would desync the key
+ * from the wire URL and silently disable the header. Userinfo/query/fragment
+ * are dropped (not part of git's URL match) and control characters stripped
+ * (git rejects a newline in a config key outright).
+ */
+function buildExtraHeaderKey(url: string): string | undefined {
+  let scoped: string;
+  try {
+    const u = new URL(url);
+    u.username = '';
+    u.password = '';
+    u.search = '';
+    u.hash = '';
+    scoped = `${u.protocol}//${u.host}${u.pathname}`;
+  } catch {
+    return undefined;
+  }
+  scoped = scoped.replace(/[\r\n\0]/g, '');
+  return `http.${scoped}.extraHeader`;
+}
+
+/**
+ * Build the spawn env for `git`. Suppresses credential prompts and, when a
+ * credential resolves (see resolveGitCredential), injects a single
+ * host-scoped Authorization header via the `GIT_CONFIG_*` env protocol
+ * (git ≥2.31) so credentials never appear in argv or the URL. Appends after
+ * any existing `GIT_CONFIG_COUNT` rather than overwriting it. Exported for
+ * unit tests.
  */
 export function buildGitEnv(
   baseEnv: NodeJS.ProcessEnv,
-  options?: { token?: string },
+  options?: { token?: string; url?: string },
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...baseEnv,
@@ -490,32 +540,33 @@ export function buildGitEnv(
     GIT_ASKPASS: process.platform === 'win32' ? 'echo' : '/bin/true',
   };
 
-  const token = options?.token;
-  if (token) {
-    // `x-access-token` is the documented username for GitHub PATs / app tokens
-    // when supplied via HTTP Basic. Token is base64-encoded here, never put
-    // into argv or the URL.
-    const credential = Buffer.from(`x-access-token:${token}`).toString('base64');
-    env.GIT_CONFIG_COUNT = '1';
-    env.GIT_CONFIG_KEY_0 = 'http.extraHeader';
-    env.GIT_CONFIG_VALUE_0 = `Authorization: Basic ${credential}`;
+  const credential = resolveGitCredential(options);
+  const key = options?.url ? buildExtraHeaderKey(options.url) : undefined;
+  if (credential && key) {
+    // Append after any GIT_CONFIG_* the operator already set, so we never
+    // clobber their git config (e.g. an enforced http.sslVerify).
+    const existing = Number.parseInt(env.GIT_CONFIG_COUNT ?? '', 10);
+    const base = Number.isInteger(existing) && existing > 0 ? existing : 0;
+    env.GIT_CONFIG_COUNT = String(base + 1);
+    env[`GIT_CONFIG_KEY_${base}`] = key;
+    env[`GIT_CONFIG_VALUE_${base}`] = `Authorization: Basic ${credential}`;
   }
 
   return env;
 }
 
-// `options` carries both auth mechanisms: `token` (per-request GitHub PAT,
-// injected as an Authorization header via buildGitEnv) and `url` (used to
-// detect Azure DevOps and inject AZURE_DEVOPS_PAT via buildAuthArgs). The two
-// paths are independent — a request may use either, both, or neither.
+// `options` carries the inputs the credential resolver needs: a per-request
+// GitHub `token` and the clone `url`. buildGitEnv injects at most ONE
+// host-scoped Authorization header (GitHub PAT for github.com, else the
+// server's AZURE_DEVOPS_PAT for Azure hosts) via the GIT_CONFIG_* protocol —
+// never in argv. See resolveGitCredential / buildExtraHeaderKey.
 function runGit(
   args: string[],
   cwd?: string,
   options?: { token?: string; url?: string },
 ): Promise<void> {
   return new Promise((resolve, reject) => {
-    const authArgs = options?.url ? buildAuthArgs(options.url) : [];
-    const proc = spawn('git', [...authArgs, ...args], {
+    const proc = spawn('git', args, {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
