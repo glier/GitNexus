@@ -36,7 +36,10 @@ type InputMode = 'github' | 'gitlab' | 'azure' | 'local';
 
 const GITHUB_RE = /^https?:\/\/(www\.)?github\.com\/[^/\s]+\/[^/\s]+/i;
 const GITLAB_RE = /^https?:\/\/[^/\s]+\/[^/\s]+\/[^/\s]+(\/.*)?$/i;
-const AZURE_RE = /^https?:\/\/[^/\s]+\/[^/\s]+\/[^/\s]+\/_git\/[^/\s]+/i;
+// One-or-more path segments before `/_git/`, so the legacy single-project
+// cloud form (myorg.visualstudio.com/project/_git/repo) is accepted too —
+// the backend already supports it (isAzureDevOpsUrl / extractRepoName).
+const AZURE_RE = /^https?:\/\/[^/\s]+\/(?:[^/\s]+\/)+_git\/[^/\s]+/i;
 const IS_WINDOWS = navigator.userAgent.toLowerCase().includes('win');
 
 function isValidGithubUrl(value: string): boolean {
