@@ -334,6 +334,19 @@ describe('git-clone', () => {
       expect(env.GIT_ASKPASS).toBeDefined();
     });
 
+    it('scrubs inherited git trace vars that would log the Authorization header', () => {
+      const env = buildGitEnv({
+        GIT_TRACE: '1',
+        GIT_TRACE_CURL: '1',
+        GIT_TRACE_PACKET: '1',
+        GIT_CURL_VERBOSE: '1',
+      });
+      expect(env.GIT_TRACE).toBeUndefined();
+      expect(env.GIT_TRACE_CURL).toBeUndefined();
+      expect(env.GIT_TRACE_PACKET).toBeUndefined();
+      expect(env.GIT_CURL_VERBOSE).toBeUndefined();
+    });
+
     it('does not set GIT_CONFIG_* env vars when no token is provided', () => {
       const env = buildGitEnv({});
       expect(env.GIT_CONFIG_COUNT).toBeUndefined();

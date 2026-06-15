@@ -557,6 +557,14 @@ export function buildGitEnv(
     GIT_TERMINAL_PROMPT: '0',
     // Ensure no credential helper tries to open a GUI prompt
     GIT_ASKPASS: process.platform === 'win32' ? 'echo' : '/bin/true',
+    // Scrub git's HTTP/transport trace vars: if inherited from the parent
+    // process they dump every request header — including the injected
+    // Authorization header — to stderr, which runGit captures and logs.
+    // `undefined` makes child_process omit the key from the child env.
+    GIT_TRACE: undefined,
+    GIT_TRACE_CURL: undefined,
+    GIT_TRACE_PACKET: undefined,
+    GIT_CURL_VERBOSE: undefined,
   };
 
   const credential = resolveGitCredential(options);
