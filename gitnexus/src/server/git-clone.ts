@@ -248,13 +248,15 @@ export interface CloneProgress {
  */
 export function isAzureDevOpsUrl(url: string): boolean {
   try {
-    const host = new URL(url).hostname.toLowerCase();
+    // Strip a single trailing dot: `dev.azure.com.` is a valid absolute FQDN
+    // that resolves to the same host, so it must match too.
+    const host = new URL(url).hostname.toLowerCase().replace(/\.$/, '');
 
     // Self-hosted: match against the configured base URL.
     const configuredBase = process.env.AZURE_DEVOPS_URL;
     if (configuredBase) {
       try {
-        const baseHost = new URL(configuredBase).hostname.toLowerCase();
+        const baseHost = new URL(configuredBase).hostname.toLowerCase().replace(/\.$/, '');
         if (host === baseHost) return true;
       } catch {
         /* invalid AZURE_DEVOPS_URL — fall through to cloud check */

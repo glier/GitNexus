@@ -515,6 +515,16 @@ describe('git-clone', () => {
     it('returns false for invalid URL', () => {
       expect(isAzureDevOpsUrl('not-a-url')).toBe(false);
     });
+
+    it('normalizes a trailing-dot FQDN (dev.azure.com.)', () => {
+      expect(isAzureDevOpsUrl('https://dev.azure.com./org/proj/_git/repo')).toBe(true);
+      expect(isAzureDevOpsUrl('https://myorg.visualstudio.com./project/_git/repo')).toBe(true);
+    });
+
+    it('does not over-match a lookalike host with a trailing label', () => {
+      expect(isAzureDevOpsUrl('https://dev.azure.com.evil.com/org/proj/_git/repo')).toBe(false);
+      expect(isAzureDevOpsUrl('https://evilvisualstudio.com/project/_git/repo')).toBe(false);
+    });
   });
 
   describe('extractRepoName — Azure DevOps URLs', () => {
