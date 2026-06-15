@@ -679,6 +679,42 @@ export const handleQueryRequest = async (
   }
 };
 
+/**
+ * Validate the optional `token` field of POST /api/analyze. Returns an
+ * { status, error } to send, or null when the token is absent or valid.
+ *
+ * The token is a GitHub PAT: charset-restricted (blocks CRLF header
+ * smuggling), length-bounded (1–256), and bound to github.com using the SAME
+ * GITHUB_TOKEN_HOSTS allowlist + hostname parse as resolveGitCredential, so a
+ * token the API accepts is exactly the one buildGitEnv will inject — and one
+ * it rejects is never sent off github.com.
+ *
+ * Exported for unit tests (the route validation is otherwise only reachable
+ * by booting the server).
+ */
+export function validateAnalyzeToken(
+  repoToken: unknown,
+  repoUrl: unknown,
+): { status: number; error: string } | null {
+  if (repoToken === undefined) return null;
+  if (typeof repoToken !== 'string') return { status: 400, error: '"token" must be a string' };
+  if (repoToken.length === 0 || repoToken.length > 256)
+    return { status: 400, error: '"token" length must be between 1 and 256' };
+  if (!/^[A-Za-z0-9._~+/=-]+$/.test(repoToken))
+    return { status: 400, error: '"token" contains invalid characters' };
+  if (!repoUrl || typeof repoUrl !== 'string')
+    return { status: 400, error: '"token" requires "url"' };
+  let tokenHost: string;
+  try {
+    tokenHost = new URL(repoUrl).hostname.toLowerCase();
+  } catch {
+    return { status: 400, error: '"url" must be a valid URL when "token" is provided' };
+  }
+  if (!GITHUB_TOKEN_HOSTS.has(tokenHost))
+    return { status: 400, error: '"token" is only supported for github.com URLs' };
+  return null;
+}
+
 export const createServer = async (port: number, host: string = '127.0.0.1') => {
   // Surface a cleartext Azure DevOps PAT config at boot (operators rarely
   // read per-request logs). Warn-only — http:// self-hosted stays supported.
@@ -1496,39 +1532,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         }
 
         // Token: optional, restricted charset to prevent header smuggling
-        // (CRLF) and bound length so a hostile body can't blow up env size.
-        if (repoToken !== undefined) {
-          if (typeof repoToken !== 'string') {
-            res.status(400).json({ error: '"token" must be a string' });
-            return;
-          }
-          if (repoToken.length === 0 || repoToken.length > 256) {
-            res.status(400).json({ error: '"token" length must be between 1 and 256' });
-            return;
-          }
-          if (!/^[A-Za-z0-9._~+/=-]+$/.test(repoToken)) {
-            res.status(400).json({ error: '"token" contains invalid characters' });
-            return;
-          }
-          if (!repoUrl) {
-            res.status(400).json({ error: '"token" requires "url"' });
-            return;
-          }
-          // Bind the GitHub PAT to github.com so it can never be delivered to
-          // another host via a hand-crafted request. Uses the SAME allowlist
-          // and parse as the injection-site check (resolveGitCredential), so
-          // a token the API accepts is the one buildGitEnv will inject.
-          let tokenHost: string;
-          try {
-            tokenHost = new URL(repoUrl).hostname.toLowerCase();
-          } catch {
-            res.status(400).json({ error: '"url" must be a valid URL when "token" is provided' });
-            return;
-          }
-          if (!GITHUB_TOKEN_HOSTS.has(tokenHost)) {
-            res.status(400).json({ error: '"token" is only supported for github.com URLs' });
-            return;
-          }
+        // (CRLF), bound length, and bound to github.com (see validateAnalyzeToken).
+        const tokenError = validateAnalyzeToken(repoToken, repoUrl);
+        if (tokenError) {
+          res.status(tokenError.status).json({ error: tokenError.error });
+          return;
         }
 
         // Path validation. The previous `normalize !== resolve` guard was inert

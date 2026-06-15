@@ -558,6 +558,29 @@ describe('git-clone', () => {
       expect(isAzureDevOpsUrl('https://dev.azure.com.evil.com/org/proj/_git/repo')).toBe(false);
       expect(isAzureDevOpsUrl('https://evilvisualstudio.com/project/_git/repo')).toBe(false);
     });
+
+    it('recognizes a self-hosted host configured via AZURE_DEVOPS_URL', () => {
+      const prev = process.env.AZURE_DEVOPS_URL;
+      try {
+        process.env.AZURE_DEVOPS_URL = 'http://tfs.corp.example';
+        expect(isAzureDevOpsUrl('http://tfs.corp.example/Coll/Proj/_git/Repo')).toBe(true);
+        expect(isAzureDevOpsUrl('https://other.host.example/Coll/Proj/_git/Repo')).toBe(false);
+      } finally {
+        if (prev === undefined) delete process.env.AZURE_DEVOPS_URL;
+        else process.env.AZURE_DEVOPS_URL = prev;
+      }
+    });
+
+    it('falls through to the cloud check when AZURE_DEVOPS_URL is invalid', () => {
+      const prev = process.env.AZURE_DEVOPS_URL;
+      try {
+        process.env.AZURE_DEVOPS_URL = 'not-a-url';
+        expect(isAzureDevOpsUrl('https://dev.azure.com/org/proj/_git/repo')).toBe(true);
+      } finally {
+        if (prev === undefined) delete process.env.AZURE_DEVOPS_URL;
+        else process.env.AZURE_DEVOPS_URL = prev;
+      }
+    });
   });
 
   describe('cleartext-credential warnings', () => {
