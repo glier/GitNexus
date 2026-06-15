@@ -457,16 +457,33 @@ export async function cloneOrPull(
 }
 
 /**
+ * Hosts the per-request GitHub PAT may be sent to. Exported so the
+ * /api/analyze boundary check and this injection-site check share one
+ * allowlist (they must agree, or a token accepted by the API could be
+ * silently dropped — or worse — at injection).
+ */
+export const GITHUB_TOKEN_HOSTS: ReadonlySet<string> = new Set(['github.com', 'www.github.com']);
+
+/**
  * Resolve at most ONE git credential for a clone/pull, by server-side policy
  * keyed on the clone host against a fixed allowlist (never a free-form user
  * toggle):
- *   1. a per-request GitHub PAT — only for github.com / www.github.com;
+ *   1. a per-request GitHub PAT — only for hosts in GITHUB_TOKEN_HOSTS;
  *   2. else the server's AZURE_DEVOPS_PAT — only for Azure DevOps hosts;
  *   3. else none.
  * The two host sets are disjoint, so at most one credential ever applies; the
  * GitHub token taking precedence is deterministic for the pathological case
  * where AZURE_DEVOPS_URL is itself configured to a github.com host. Returns
  * the base64 of the Basic-auth `user:secret` pair, or undefined.
+ *
+ * Security note (re CodeQL js/user-controlled-bypass): the clone URL is
+ * user-controlled and selects WHICH credential applies, but it cannot
+ * redirect a credential to an arbitrary host — the host is matched against
+ * fixed server-side allowlists (GITHUB_TOKEN_HOSTS, isAzureDevOpsUrl's
+ * dev.azure.com/*.visualstudio.com/configured AZURE_DEVOPS_URL), and the
+ * emitted header is host-scoped (buildExtraHeaderKey). A URL outside the
+ * allowlists yields no credential. The selection is therefore server-policy,
+ * not a bypass the user can steer.
  */
 function resolveGitCredential(options?: { token?: string; url?: string }): string | undefined {
   const url = options?.url;
@@ -481,7 +498,7 @@ function resolveGitCredential(options?: { token?: string; url?: string }): strin
 
   // 1. Per-request GitHub PAT — github.com only (mirrors the /api/analyze
   //    host-bind so the user's token is never sent off github.com).
-  if (options.token && (host === 'github.com' || host === 'www.github.com')) {
+  if (options.token && GITHUB_TOKEN_HOSTS.has(host)) {
     return Buffer.from(`x-access-token:${options.token}`).toString('base64');
   }
 
