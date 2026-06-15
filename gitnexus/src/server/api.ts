@@ -1549,9 +1549,19 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
         const job = jobManager.createJob({ repoUrl, repoPath: repoLocalPath });
 
-        // If job was already running (dedup), just return its id
+        // If job was already running (dedup), just return its id. The token is
+        // not part of the dedup identity and is never stored on the job, so a
+        // token on THIS request had no effect — the existing job already
+        // cloned (or is cloning) with whatever credentials its originating
+        // request supplied. Surface `tokenIgnored` so an authenticated caller
+        // isn't misled into thinking their PAT took effect on a reused job.
         if (job.status !== 'queued') {
-          res.status(202).json({ jobId: job.id, status: job.status });
+          const body: { jobId: string; status: string; tokenIgnored?: boolean } = {
+            jobId: job.id,
+            status: job.status,
+          };
+          if (repoToken !== undefined) body.tokenIgnored = true;
+          res.status(202).json(body);
           return;
         }
 
