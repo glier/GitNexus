@@ -17,6 +17,7 @@ import {
   ArrowRight,
   AlertCircle,
   Sparkles,
+  Key,
 } from '@/lib/lucide-icons';
 import {
   startAnalyze,
@@ -192,6 +193,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
     null,
   );
   const [githubUrl, setGithubUrl] = useState('');
+  const [githubToken, setGithubToken] = useState('');
   const [gitlabUrl, setGitlabUrl] = useState('');
   const [azureUrl, setAzureUrl] = useState('');
   const [localPath, setLocalPath] = useState('');
@@ -259,6 +261,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
     invalidateRequest();
     setMode(m);
     setGithubUrl('');
+    setGithubToken('');
     setGitlabUrl('');
     setAzureUrl('');
     setLocalPath('');
@@ -312,7 +315,10 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
     try {
       const request =
         mode === 'github'
-          ? { url: githubUrl.trim() }
+          ? {
+              url: githubUrl.trim(),
+              ...(githubToken.trim() ? { token: githubToken.trim() } : {}),
+            }
           : mode === 'gitlab'
             ? { url: gitlabUrl.trim() }
             : mode === 'azure'
@@ -358,6 +364,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
             : undefined) ??
           t('onboarding:repoAnalyzer.defaultRepoName');
         setCompletedRepoName(name);
+        setGithubToken('');
         setPhase('done');
         sseControllerRef.current = null;
         completeTimerRef.current = setTimeout(() => {
@@ -427,6 +434,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
       } catch {}
       jobIdRef.current = null;
     }
+    setGithubToken('');
     setPhase('input');
     setProgress({ phase: 'queued', percent: 0, message: t('common:analyzePhases.queued') });
     setUploading(false);
@@ -490,6 +498,39 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
                 )}
               </div>
             )}
+          </div>
+
+          {/* Optional GitHub Personal Access Token for private repos */}
+          <div className="space-y-1.5 pt-1">
+            <label
+              htmlFor={`${inputId}-token`}
+              className="block text-xs font-medium tracking-wider text-text-secondary uppercase"
+            >
+              {t('onboarding:repoAnalyzer.githubTokenLabel')}
+            </label>
+            <div className="flex items-center gap-3 rounded-xl border border-border-default bg-void px-4 py-3 transition-all duration-200 focus-within:border-accent/40">
+              <Key className="h-4 w-4 shrink-0 text-text-muted" />
+              <input
+                id={`${inputId}-token`}
+                type="password"
+                value={githubToken}
+                onChange={(e) => setGithubToken(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && canSubmit && !isLoading) {
+                    e.preventDefault();
+                    handleAnalyze();
+                  }
+                }}
+                disabled={isLoading}
+                placeholder={t('onboarding:repoAnalyzer.githubTokenPlaceholder')}
+                autoComplete="off"
+                spellCheck={false}
+                className="flex-1 border-none bg-transparent font-mono text-sm text-text-primary outline-none placeholder:text-text-muted disabled:opacity-50"
+              />
+            </div>
+            <p className="text-xs text-text-muted">
+              {t('onboarding:repoAnalyzer.githubTokenHelp')}
+            </p>
           </div>
         </div>
       )}

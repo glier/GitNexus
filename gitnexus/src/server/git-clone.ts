@@ -428,6 +428,7 @@ export async function cloneOrPull(
   url: string,
   targetDir: string,
   onProgress?: (progress: CloneProgress) => void,
+  options?: { token?: string },
 ): Promise<string> {
   // Containment barrier — inline with the canonical path.relative idiom so
   // CodeQL recognizes the sanitizer at every following filesystem and
@@ -462,30 +463,63 @@ export async function cloneOrPull(
     // whatever remote the dir was originally cloned from.
     await assertRemoteMatchesRequestedUrl(safeTarget, url);
     onProgress?.({ phase: 'pulling', message: 'Pulling latest changes...' });
-    await runGit(['pull', '--ff-only'], safeTarget, url);
+    await runGit(['pull', '--ff-only'], safeTarget, { token: options?.token, url });
   } else {
     await fs.mkdir(path.dirname(safeTarget), { recursive: true });
     onProgress?.({ phase: 'cloning', message: `Cloning ${url}...` });
-    await runGit(buildCloneArgs(url, safeTarget), undefined, url);
+    await runGit(buildCloneArgs(url, safeTarget), undefined, { token: options?.token, url });
   }
 
   return safeTarget;
 }
 
-function runGit(args: string[], cwd?: string, url?: string): Promise<void> {
+/**
+ * Build the spawn env for `git`. Injects an Authorization header via the
+ * standard `GIT_CONFIG_*` env protocol (git ≥2.31) when a token is supplied,
+ * so credentials never appear in argv or the URL. Exported for unit tests.
+ */
+export function buildGitEnv(
+  baseEnv: NodeJS.ProcessEnv,
+  options?: { token?: string },
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...baseEnv,
+    // Prevent git from prompting for credentials (hangs the process)
+    GIT_TERMINAL_PROMPT: '0',
+    // Ensure no credential helper tries to open a GUI prompt
+    GIT_ASKPASS: process.platform === 'win32' ? 'echo' : '/bin/true',
+  };
+
+  const token = options?.token;
+  if (token) {
+    // `x-access-token` is the documented username for GitHub PATs / app tokens
+    // when supplied via HTTP Basic. Token is base64-encoded here, never put
+    // into argv or the URL.
+    const credential = Buffer.from(`x-access-token:${token}`).toString('base64');
+    env.GIT_CONFIG_COUNT = '1';
+    env.GIT_CONFIG_KEY_0 = 'http.extraHeader';
+    env.GIT_CONFIG_VALUE_0 = `Authorization: Basic ${credential}`;
+  }
+
+  return env;
+}
+
+// `options` carries both auth mechanisms: `token` (per-request GitHub PAT,
+// injected as an Authorization header via buildGitEnv) and `url` (used to
+// detect Azure DevOps and inject AZURE_DEVOPS_PAT via buildAuthArgs). The two
+// paths are independent — a request may use either, both, or neither.
+function runGit(
+  args: string[],
+  cwd?: string,
+  options?: { token?: string; url?: string },
+): Promise<void> {
   return new Promise((resolve, reject) => {
-    const authArgs = url ? buildAuthArgs(url) : [];
+    const authArgs = options?.url ? buildAuthArgs(options.url) : [];
     const proc = spawn('git', [...authArgs, ...args], {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
-      env: {
-        ...process.env,
-        // Prevent git from prompting for credentials (hangs the process)
-        GIT_TERMINAL_PROMPT: '0',
-        // Ensure no credential helper tries to open a GUI prompt
-        GIT_ASKPASS: process.platform === 'win32' ? 'echo' : '/bin/true',
-      },
+      env: buildGitEnv(process.env, options),
     });
 
     let stderr = '';

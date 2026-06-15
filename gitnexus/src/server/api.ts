@@ -1461,7 +1461,14 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     requireLocalhostOrigin,
     async (req, res) => {
       try {
-        const { url: repoUrl, path: repoLocalPath, force, embeddings, dropEmbeddings } = req.body;
+        const {
+          url: repoUrl,
+          path: repoLocalPath,
+          force,
+          embeddings,
+          dropEmbeddings,
+          token: repoToken,
+        } = req.body;
 
         // Input type validation
         if (repoUrl !== undefined && typeof repoUrl !== 'string') {
@@ -1476,6 +1483,27 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         if (!repoUrl && !repoLocalPath) {
           res.status(400).json({ error: 'Provide "url" (git URL) or "path" (local path)' });
           return;
+        }
+
+        // Token: optional, restricted charset to prevent header smuggling
+        // (CRLF) and bound length so a hostile body can't blow up env size.
+        if (repoToken !== undefined) {
+          if (typeof repoToken !== 'string') {
+            res.status(400).json({ error: '"token" must be a string' });
+            return;
+          }
+          if (repoToken.length === 0 || repoToken.length > 256) {
+            res.status(400).json({ error: '"token" length must be between 1 and 256' });
+            return;
+          }
+          if (!/^[A-Za-z0-9._~+/=-]+$/.test(repoToken)) {
+            res.status(400).json({ error: '"token" contains invalid characters' });
+            return;
+          }
+          if (!repoUrl) {
+            res.status(400).json({ error: '"token" requires "url"' });
+            return;
+          }
         }
 
         // Path validation. The previous `normalize !== resolve` guard was inert
@@ -1520,11 +1548,16 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                 progress: { phase: 'cloning', percent: 0, message: `Cloning ${repoUrl}...` },
               });
 
-              await cloneOrPull(repoUrl, targetPath, (progress) => {
-                jobManager.updateJob(job.id, {
-                  progress: { phase: progress.phase, percent: 5, message: progress.message },
-                });
-              });
+              await cloneOrPull(
+                repoUrl,
+                targetPath,
+                (progress) => {
+                  jobManager.updateJob(job.id, {
+                    progress: { phase: progress.phase, percent: 5, message: progress.message },
+                  });
+                },
+                repoToken ? { token: repoToken } : undefined,
+              );
             }
 
             if (!targetPath) {
