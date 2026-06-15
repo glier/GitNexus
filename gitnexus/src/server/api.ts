@@ -38,6 +38,7 @@ import {
   getCloneDir,
   cloneOrPull,
   warnIfInsecureAzureConfig,
+  GITHUB_TOKEN_HOSTS,
 } from './git-clone.js';
 import { createAnalyzeUploadHandler } from './analyze-upload.js';
 import { createLocalhostOriginGuard, normalizeBoundHost } from './middleware.js';
@@ -1511,6 +1512,21 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           }
           if (!repoUrl) {
             res.status(400).json({ error: '"token" requires "url"' });
+            return;
+          }
+          // Bind the GitHub PAT to github.com so it can never be delivered to
+          // another host via a hand-crafted request. Uses the SAME allowlist
+          // and parse as the injection-site check (resolveGitCredential), so
+          // a token the API accepts is the one buildGitEnv will inject.
+          let tokenHost: string;
+          try {
+            tokenHost = new URL(repoUrl).hostname.toLowerCase();
+          } catch {
+            res.status(400).json({ error: '"url" must be a valid URL when "token" is provided' });
+            return;
+          }
+          if (!GITHUB_TOKEN_HOSTS.has(tokenHost)) {
+            res.status(400).json({ error: '"token" is only supported for github.com URLs' });
             return;
           }
         }
