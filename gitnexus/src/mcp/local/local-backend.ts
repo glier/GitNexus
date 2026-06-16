@@ -96,6 +96,32 @@ function resolveAliasString(canonical: unknown, legacy: unknown): string | undef
   }
   return undefined;
 }
+
+/** The two impact engines (KTD1). `'callgraph'` is the default/established path. */
+export type ImpactMode = 'callgraph' | 'pdg';
+
+/**
+ * Validate the `impact` `mode` param (KTD5 — backend hard-gate).
+ *
+ * The MCP JSON-schema `enum` is advisory only (server.ts forwards args
+ * unvalidated and `callTool` is reachable directly), so this backend check is
+ * the real boundary — mirroring `_pdgQueryImpl`'s `mode` enum validation. A
+ * typo'd mode silently running callgraph is exactly the silent fallback this
+ * forbids (it would make the accuracy harness compare callgraph-vs-callgraph
+ * and report perfect parity).
+ *
+ * Absent / `undefined` / `'callgraph'` all resolve to `'callgraph'` (the
+ * unchanged default path). `'pdg'` is valid. Anything else — `'PDG'`, `'pgd'`,
+ * `''`, or a non-string (`0`, `null`, …) — returns a structured `{ error }`,
+ * never a callgraph result.
+ */
+function validateImpactMode(rawMode: unknown): { mode: ImpactMode } | { error: string } {
+  if (rawMode === undefined || rawMode === 'callgraph') return { mode: 'callgraph' };
+  if (rawMode === 'pdg') return { mode: 'pdg' };
+  return {
+    error: `Invalid "mode": expected "callgraph" or "pdg", got ${JSON.stringify(rawMode)}.`,
+  };
+}
 // AI context generation is CLI-only (gitnexus analyze)
 // import { generateAIContextFiles } from '../../cli/ai-context.js';
 
@@ -425,7 +451,15 @@ interface ImpactParams {
   file_path?: string;
   kind?: string;
   direction: 'upstream' | 'downstream';
+  /**
+   * Blast-radius engine (KTD1/KTD5). Absent / `undefined` / `'callgraph'` →
+   * the unchanged inter-procedural symbol→symbol BFS. `'pdg'` → the opt-in,
+   * intra-procedural Program Dependence Graph traversal (`_runImpactPDG`).
+   * Validated in `_impactImpl`; any other value is a hard `{ error }`.
+   */
+  mode?: ImpactMode;
   maxDepth?: number;
+  crossDepth?: number;
   relationTypes?: string[];
   includeTests?: boolean;
   minConfidence?: number;
@@ -4238,6 +4272,56 @@ export class LocalBackend {
     await this.ensureInitialized(repo);
 
     const { target, direction } = params;
+
+    // ── Dispatch order (KTD5) ──────────────────────────────────────────
+    // (1) Validate `mode`. Absent/'callgraph' → unchanged path; 'pdg' → the
+    // intra-procedural PDG engine (stubbed in U1); anything else → hard error.
+    // This MUST come before resolveSymbolCandidates so the ambiguous branch can
+    // fork on the validated mode and never run the callgraph fan-out under pdg.
+    const modeResult = validateImpactMode(params.mode);
+    if ('error' in modeResult) {
+      return {
+        error: modeResult.error,
+        target: { name: target },
+        direction,
+        impactedCount: 0,
+        risk: 'UNKNOWN',
+      };
+    }
+    const mode = modeResult.mode;
+
+    if (mode === 'pdg') {
+      // KTD12 — param-compatibility hard rejections (decided as errors, NOT
+      // silent ignores and NOT an `ignoredParams` echo). Each names a symbol-
+      // graph / cross-repo concept the PDG engine cannot honor:
+      //   relationTypes → names symbol edges (PDG walks BasicBlock edges).
+      //   crossDepth    → cross-repo hops (PDG is single-repo intra-procedural).
+      //   minConfidence → CDG/RD edges may carry no confidence → would drop all.
+      // A loud failure beats a quietly-wrong result. (@group targets are
+      // rejected at the group-forward boundary in callToolAtGroupRepo before
+      // they ever reach here; see KTD12.)
+      const incompatible: string[] = [];
+      if (params.relationTypes !== undefined) incompatible.push('relationTypes');
+      if (params.crossDepth !== undefined) incompatible.push('crossDepth');
+      if (params.minConfidence !== undefined) incompatible.push('minConfidence');
+      if (incompatible.length > 0) {
+        return {
+          error:
+            `Parameter(s) ${incompatible.join(', ')} are not supported with mode:'pdg' ` +
+            `(intra-procedural, single-repo, dependence-edge based). Remove them or use mode:'callgraph'.`,
+          target: { name: target },
+          direction,
+          impactedCount: 0,
+          risk: 'UNKNOWN',
+        };
+      }
+    }
+
+    // (2) PDG-layer presence probe — STUB for U1; U2 fills in the four-state
+    // degradation contract (no-layer / partial / unknown / ready) here, before
+    // any DB scan, so a missing `--pdg` layer returns a guidance note rather
+    // than a confusing empty traversal. Intentionally a no-op for now.
+
     const maxDepth = params.maxDepth || 3;
     // Map legacy relation type names before filtering (backward compat for OVERRIDES → METHOD_OVERRIDES)
     const mappedRelTypes = params.relationTypes?.flatMap((t: string) =>
@@ -4300,6 +4384,44 @@ export class LocalBackend {
     }
 
     if (outcome.kind === 'ambiguous') {
+      // KTD5 ambiguous trap — under mode:'pdg' we MUST NOT fall into the
+      // callgraph fan-out below: it runs `_runImpactBFS` per candidate, which
+      // would silently execute the call-graph engine under a `pdg` call (the
+      // exact silent fallback KTD5 forbids). For U1 the pdg ambiguous path
+      // returns the candidate list WITHOUT any callgraph probe; the full pdg
+      // ambiguous handling (per-candidate PDG summaries / ranking) lands in U4.
+      if (mode === 'pdg') {
+        const AMBIGUOUS_MAX_CANDIDATES = 6;
+        const truncated = outcome.candidates.length > AMBIGUOUS_MAX_CANDIDATES;
+        const shown = outcome.candidates.slice(0, AMBIGUOUS_MAX_CANDIDATES);
+        return {
+          status: 'ambiguous',
+          mode,
+          message:
+            `Found ${outcome.candidates.length} symbols matching '${target}'` +
+            (truncated ? ` (showing ${shown.length} of ${outcome.candidates.length})` : '') +
+            `. Disambiguate with target_uid (or file_path/kind) for a single ` +
+            `authoritative PDG result.`,
+          target: { name: target },
+          direction,
+          totalCandidates: outcome.candidates.length,
+          // No single resolved symbol → impactedCount stays 0 / risk UNKNOWN
+          // (UNKNOWN must never read as "safe to refactor"). No callgraph
+          // fan-out runs, so there is no per-candidate blast radius here yet.
+          impactedCount: 0,
+          risk: 'UNKNOWN',
+          ...(truncated && { candidatesTruncated: true }),
+          candidates: shown.map((c) => ({
+            uid: c.id,
+            name: c.name,
+            kind: c.type,
+            filePath: c.filePath,
+            line: c.startLine,
+            score: Number(c.score.toFixed(2)),
+          })),
+        };
+      }
+
       // #2129 — a bare name that collides with several symbols must NOT report a
       // bare `impactedCount: 0`. The real blast radius lives under whichever
       // candidate the caller meant; a flat zero here is precisely the silent
@@ -4425,6 +4547,27 @@ export class LocalBackend {
     };
     const symType = outcome.resolvedLabel || outcome.symbol.type || '';
 
+    // (4) single → route the resolved symbol to the engine selected by `mode`.
+    // The PDG engine is a stub in U1 (full traversal lands in U3/U4); crucially
+    // it does NOT touch `_runImpactBFS`, so a `pdg` call never runs callgraph.
+    if (mode === 'pdg') {
+      return this._runImpactPDG({
+        repo,
+        sym,
+        symType,
+        direction,
+        maxDepth,
+        limit: Number.isFinite(params.limit) ? params.limit : 100,
+        offset: Number.isFinite(params.offset) ? params.offset : 0,
+        summaryOnly: params.summaryOnly,
+        // KTD2 extraction-seam discipline: hand the engine its DB dependency
+        // explicitly rather than `this.`-binding it, so the traversal (U3/U4)
+        // can later move to a standalone `pdg-impact.ts` as a move, not a
+        // rewrite. The U3 block-anchor / projection resolvers join here.
+        executeParameterized,
+      });
+    }
+
     const effectiveRelationTypes =
       (symType === 'Class' || symType === 'Interface') &&
       !hasExplicitRelationTypes &&
@@ -4441,6 +4584,44 @@ export class LocalBackend {
       offset: Number.isFinite(params.offset) ? params.offset : 0,
       summaryOnly: params.summaryOnly,
     });
+  }
+
+  /**
+   * PDG-backed blast radius (`mode:'pdg'`) — STUB (U1).
+   *
+   * The real engine (U3/U4) resolves the target symbol to its BasicBlocks,
+   * runs a direction-aware bounded BFS over the persisted `CDG` +
+   * `REACHING_DEF` edges (KTD4 truth table, KTD11 query constraints), then
+   * projects the reachable blocks back to owning symbols and assembles a
+   * consumer-safe result (KTD8 parity matrix). U1 ships only the param /
+   * validation surface, so this returns a structured "pending" payload.
+   *
+   * KTD2 extraction-seam discipline: written as a method taking its DB
+   * dependency as an explicit parameter (not reaching back through `this.` for
+   * the query path) so the traversal can later be lifted to a standalone
+   * `gitnexus/src/mcp/local/pdg-impact.ts` engine as a *move*, not a rewrite.
+   * The stub does not yet consume `executeParameterized` — the U3 anchor /
+   * BFS / projection code joins here.
+   */
+  private async _runImpactPDG(deps: {
+    repo: RepoHandle;
+    sym: { id: string; name: string; filePath: string };
+    symType: string;
+    direction: 'upstream' | 'downstream';
+    maxDepth: number;
+    limit: number;
+    offset: number;
+    summaryOnly?: boolean;
+    executeParameterized: typeof executeParameterized;
+  }): Promise<any> {
+    return {
+      error: 'pdg mode not yet implemented (U3/U4)',
+      mode: 'pdg',
+      target: { name: deps.sym.name, id: deps.sym.id, filePath: deps.sym.filePath },
+      direction: deps.direction,
+      impactedCount: 0,
+      risk: 'UNKNOWN',
+    };
   }
 
   /**
@@ -5348,6 +5529,21 @@ export class LocalBackend {
 
     const svc = this.getGroupService();
     if (method === 'impact') {
+      // KTD5/KTD12 — validate `mode` at the group-forward boundary too (the
+      // JSON-schema enum is advisory). An invalid mode errors; `mode:'pdg'` is
+      // rejected for @group targets because PDG impact is single-repo and
+      // intra-procedural — there is no cross-repo dependence graph to walk.
+      // Rejecting here (before groupImpact) is the KTD12 @group hard error.
+      const groupModeResult = validateImpactMode(params.mode);
+      if ('error' in groupModeResult) return { error: groupModeResult.error };
+      if (groupModeResult.mode === 'pdg') {
+        return {
+          error:
+            "mode:'pdg' is not supported for @group targets — PDG impact is " +
+            'single-repo and intra-procedural. Run pdg impact against an ' +
+            'individual indexed repository instead.',
+        };
+      }
       const impactArgs: Record<string, unknown> = {
         name: groupName,
         repo: resolved.repoPath,

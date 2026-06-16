@@ -1385,6 +1385,172 @@ describe('LocalBackend.callTool', () => {
   });
 });
 
+// ─── impact mode param (KTD1/KTD5/KTD12 — U1) ───────────────────────
+//
+// The MCP JSON-schema enum is advisory only (server forwards args
+// unvalidated, callTool is reachable directly), so the backend `mode`
+// validation is load-bearing. These tests pin: callgraph is the unchanged
+// default, pdg routes to the stub and NEVER the callgraph BFS, invalid modes
+// hard-error, and the KTD12 incompatible params / @group targets are rejected.
+
+describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
+  let backend: LocalBackend;
+
+  // Resolve the target to a single Function so impact reaches the single-branch
+  // dispatch (callgraph BFS or the pdg stub). The callgraph BFS then issues
+  // executeQuery for its frontier; the pdg stub does not.
+  function resolveSingleTarget() {
+    (executeParameterized as any).mockResolvedValue([
+      { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+    ]);
+    (executeQuery as any).mockResolvedValue([]);
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    platformMocks.isVectorExtensionSupportedByPlatform.mockReturnValue(true);
+    backend = new LocalBackend();
+    setupSingleRepo();
+    await backend.init();
+  });
+
+  it('mode absent → callgraph result (target populated, no mode-error, BFS runs)', async () => {
+    resolveSingleTarget();
+    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const result = await backend.callTool('impact', { target: 'main', direction: 'upstream' });
+    // A clean callgraph result carries no mode/stub error and runs the BFS.
+    expect(result.error ?? '').not.toMatch(/Invalid "mode"/);
+    expect(result.error ?? '').not.toMatch(/not yet implemented/);
+    expect(result.target).toBeDefined();
+    expect(bfsSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("mode:'callgraph' and mode:undefined are byte-identical to absent (regression guard)", async () => {
+    resolveSingleTarget();
+    const absent = await backend.callTool('impact', { target: 'main', direction: 'upstream' });
+    const callgraph = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'upstream',
+      mode: 'callgraph',
+    });
+    const undef = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'upstream',
+      mode: undefined,
+    });
+    expect(callgraph).toEqual(absent);
+    expect(undef).toEqual(absent);
+  });
+
+  it("mode:'pdg' routes to the PDG stub and NEVER runs the callgraph BFS (KTD5)", async () => {
+    resolveSingleTarget();
+    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'upstream',
+      mode: 'pdg',
+    });
+    // Stub payload — pending until U3/U4.
+    expect(result.error).toMatch(/not yet implemented/);
+    expect(result.mode).toBe('pdg');
+    // The callgraph engine must never be invoked under a pdg call.
+    expect(bfsSpy).not.toHaveBeenCalled();
+  });
+
+  it.each([['PDG'], ['pgd'], [''], [0], [null]])(
+    'invalid mode %j → structured {error}, never a callgraph result (KTD5 anti-silent-fallback)',
+    async (bad) => {
+      resolveSingleTarget();
+      const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+      const result = await backend.callTool('impact', {
+        target: 'main',
+        direction: 'upstream',
+        mode: bad as any,
+      });
+      expect(result.error).toMatch(/Invalid "mode"/);
+      expect(result.risk).toBe('UNKNOWN');
+      // A typo'd mode must NEVER quietly run callgraph.
+      expect(bfsSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['relationTypes', { relationTypes: ['CALLS'] }],
+    ['crossDepth', { crossDepth: 2 }],
+    ['minConfidence', { minConfidence: 0.5 }],
+  ])("mode:'pdg' + %s → hard {error} (KTD12, not a silent ignore)", async (_label, extra) => {
+    resolveSingleTarget();
+    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'upstream',
+      mode: 'pdg',
+      ...extra,
+    });
+    expect(result.error).toMatch(/not supported with mode:'pdg'/);
+    expect(result.error).toContain(_label);
+    // Hard error — never silently ignored, never the callgraph fan-out.
+    expect(bfsSpy).not.toHaveBeenCalled();
+  });
+
+  it("ambiguous target under mode:'pdg' never invokes the callgraph fan-out (KTD5 ambiguous trap)", async () => {
+    // Two same-name Functions → resolver returns ambiguous.
+    (executeParameterized as any).mockResolvedValue([
+      { id: 'func:login:1', name: 'login', type: 'Function', filePath: 'src/auth.ts', startLine: 5 },
+      {
+        id: 'func:login:2',
+        name: 'login',
+        type: 'Function',
+        filePath: 'src/admin/login.ts',
+        startLine: 8,
+      },
+    ]);
+    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const result = await backend.callTool('impact', {
+      target: 'login',
+      direction: 'upstream',
+      mode: 'pdg',
+    });
+    expect(result.status).toBe('ambiguous');
+    expect(result.mode).toBe('pdg');
+    expect(result.candidates).toHaveLength(2);
+    expect(result.impactedCount).toBe(0);
+    expect(result.risk).toBe('UNKNOWN');
+    // The callgraph per-candidate probe fan-out MUST NOT run under pdg.
+    expect(bfsSpy).not.toHaveBeenCalled();
+    // No per-candidate blast radius is computed yet (U4), so the candidate
+    // entries carry no impactedCount field from a callgraph probe.
+    for (const c of result.candidates) {
+      expect(c.impactedCount).toBeUndefined();
+    }
+  });
+
+  it("@group target with mode:'pdg' is rejected (KTD12 — PDG is single-repo)", async () => {
+    resolveAtMemberMock.mockResolvedValue({ ok: true, repoPath: '/tmp/test-project' });
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'upstream',
+      mode: 'pdg',
+      repo: '@grp',
+    });
+    expect(result.error).toMatch(/not supported for @group targets/);
+  });
+
+  it("@group target with mode:'callgraph' still forwards to group impact (unchanged)", async () => {
+    resolveAtMemberMock.mockResolvedValue({ ok: true, repoPath: '/tmp/test-project' });
+    // groupImpact is reached only if the mode gate passes; we don't assert its
+    // payload (group infra is stubbed), only that no mode-error short-circuited.
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'upstream',
+      mode: 'callgraph',
+      repo: '@grp',
+    });
+    expect(result?.error ?? '').not.toMatch(/not supported for @group targets/);
+    expect(result?.error ?? '').not.toMatch(/Invalid "mode"/);
+  });
+});
+
 // ─── Repo resolution ────────────────────────────────────────────────
 
 describe('LocalBackend.resolveRepo', () => {

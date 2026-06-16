@@ -409,6 +409,8 @@ Each edit is tagged with confidence:
     description: `Analyze the blast radius of changing a code symbol.
 Returns affected symbols grouped by depth, plus risk assessment, affected execution flows, and affected modules.
 
+MODE (opt-in): "callgraph" (default) walks symbol→symbol edges (CALLS/IMPORTS/EXTENDS/IMPLEMENTS) — inter-procedural, the established behavior. "pdg" computes the blast radius from the persisted Program Dependence Graph (control + data dependence) — finer-grained WITHIN a function but intra-procedural, and requires an index built with \`gitnexus analyze --pdg\`. The two modes answer the same question with different engines; pdg is incompatible with relationTypes/crossDepth/minConfidence and with @group targets (each rejected).
+
 WHEN TO USE: Before making code changes — especially refactoring, renaming, or modifying shared code. Shows what would break.
 AFTER THIS: Review d=1 items (WILL BREAK). Use context() on high-risk symbols.
 
@@ -449,6 +451,13 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
         direction: {
           type: 'string',
           description: 'upstream (what depends on this) or downstream (what this depends on)',
+        },
+        mode: {
+          type: 'string',
+          enum: ['callgraph', 'pdg'],
+          default: 'callgraph',
+          description:
+            "Blast-radius engine. 'callgraph' (default) = inter-procedural symbol→symbol traversal (current behavior). 'pdg' = opt-in, intra-procedural Program Dependence Graph traversal (control + data dependence); requires an index built with `gitnexus analyze --pdg`. The pdg mode is incompatible with relationTypes/crossDepth/minConfidence and with @group targets — each is rejected, not silently ignored.",
         },
         file_path: {
           type: 'string',

@@ -276,6 +276,24 @@ describe('GITNEXUS_TOOLS', () => {
     expect(relProp.items).toEqual({ type: 'string' });
   });
 
+  it('impact advertises a mode param (callgraph default; pdg opt-in) — not a new tool (KTD1)', () => {
+    // KTD1: pdg impact ships as a PARAM on the existing tool, so the tool count
+    // must NOT change (asserted at 17 above) and `impact` must expose `mode`.
+    const impactTool = GITNEXUS_TOOLS.find((t) => t.name === 'impact')!;
+    const modeProp = impactTool.inputSchema.properties.mode;
+    expect(modeProp).toBeDefined();
+    expect(modeProp.type).toBe('string');
+    expect(modeProp.enum).toEqual(['callgraph', 'pdg']);
+    expect(modeProp.default).toBe('callgraph');
+    // The description must teach the opt-in / intra-procedural / --pdg contract.
+    expect(modeProp.description).toContain('pdg');
+    expect(modeProp.description).toContain('--pdg');
+    expect(modeProp.description.toLowerCase()).toContain('intra-procedural');
+    // The tool-level description must mention the mode so an LLM discovers it.
+    expect(impactTool.description.toLowerCase()).toContain('mode');
+    expect(impactTool.description).toContain('pdg');
+  });
+
   it('route_map description defers to api_impact for pre-change analysis', () => {
     const routeMapTool = GITNEXUS_TOOLS.find((t) => t.name === 'route_map')!;
     expect(routeMapTool.description).toContain('api_impact');

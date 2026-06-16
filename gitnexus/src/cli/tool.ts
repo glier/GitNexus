@@ -124,6 +124,7 @@ export async function impactCommand(
   target?: string,
   options?: {
     direction?: string;
+    mode?: string;
     repo?: string;
     branch?: string;
     uid?: string;
@@ -168,6 +169,9 @@ export async function impactCommand(
       file_path: options?.file,
       kind: options?.kind,
       direction: options?.direction || 'upstream',
+      // Forward the engine selector; backend validates the enum (callgraph/pdg)
+      // and treats the default 'callgraph' identically to an omitted mode.
+      mode: options?.mode,
       maxDepth: options?.depth ? parseInt(options.depth, 10) : undefined,
       includeTests: options?.includeTests ?? false,
       repo: options?.repo,
