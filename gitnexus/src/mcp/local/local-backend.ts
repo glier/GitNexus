@@ -112,6 +112,306 @@ function fnLineOf(id: string): number {
   return Number(parts[parts.length - 3]);
 }
 
+/**
+ * Parse the `<filePath>` segment out of a `BasicBlock` id, the COUNTERPART to
+ * `fnLineOf`. The id template is `BasicBlock:<filePath>:<fnLine>:<fnCol>:<blockIdx>`,
+ * so the file path is everything BETWEEN the `BasicBlock:` prefix and the last
+ * THREE colon-segments (`<fnLine>:<fnCol>:<blockIdx>`). `<filePath>` may itself
+ * contain `':'` (a Windows drive letter), so we strip from both ends rather than
+ * split-and-pick. Returns `''` for an unparseable id (treated as unresolved).
+ */
+function fnFileOf(id: string): string {
+  const parts = id.split(':');
+  // Need: `BasicBlock` + filePath(≥1) + fnLine + fnCol + blockIdx ⇒ ≥5 segments.
+  if (parts.length < 5 || parts[0] !== 'BasicBlock') return '';
+  // Drop the leading `BasicBlock` token and the trailing fnLine/fnCol/blockIdx,
+  // rejoin the middle on ':' to restore a path that itself contained colons.
+  return parts.slice(1, parts.length - 3).join(':');
+}
+
+// ── Block → owning-symbol projection types (U4) ──────────────────────────────
+
+/**
+ * One owning-symbol candidate for a reachable BasicBlock, OR an explicit
+ * `unresolved` marker for a block that maps to no `Function`/`Method` symbol
+ * (top-level/free-statement block, or a nested lambda whose start line ≠ any
+ * symbol `startLine`). A null `id` is the shadow-path marker — the block is
+ * surfaced under its file, never silently dropped (R9: a silent drop is a hidden
+ * recall loss).
+ */
+export interface OwningSymbol {
+  /** Symbol UID, or `null` for the `unresolved` shadow-path entry. */
+  id: string | null;
+  name: string;
+  /** `'Function' | 'Method' | …`, or `'unresolved'` for the shadow path. */
+  type: string;
+  filePath: string;
+  /** Symbol `startLine` (0-based), present only for a resolved symbol. */
+  startLine?: number;
+  /**
+   * True when this block's `(filePath, startLine)` query matched >1 symbol —
+   * same-line, different-name functions that the schema cannot disambiguate
+   * (no `startColumn` column; Feasibility Finding 1). ALL colliding symbols are
+   * reported (never a silent pick), each carrying this flag.
+   */
+  ambiguous?: boolean;
+}
+
+/**
+ * Net-new block → owning-symbol resolver (U4) — the REVERSE of
+ * `resolveBlockAnchor` (which goes symbol→blocks). No precedent exists:
+ * `_pdgQueryImpl` only ever extracts a raw `functionLine`, never an owning
+ * symbol. Built as a module-scope function taking injected deps (KTD2
+ * extraction discipline) so it can move to a future `pdg-impact.ts` engine as a
+ * MOVE, not a rewrite.
+ *
+ * For each reachable block id `BasicBlock:<filePath>:<fnLine>:<fnCol>:<blockIdx>`:
+ *  - `fnLineOf` → 1-based function start line; `fnFileOf` → file path.
+ *  - Query `Function`/`Method` `WHERE filePath = $f AND startLine = (fnLine-1)`
+ *    — block `fnLine` is 1-based, symbol `startLine` is 0-based, so subtract one
+ *    (the `[symStart+1]` convention from `resolveBlockAnchor`, applied in
+ *    reverse; NOT re-derived).
+ *
+ * Two non-happy paths, BOTH surfaced (never silent):
+ *  - **>1 match** (same-line different-name functions): `fnCol` rides the block
+ *    id but the schema has NO `startColumn` column and the symbol id encodes only
+ *    the name, so a `(filePath, startLine)` join cannot disambiguate. Report ALL
+ *    colliding symbols, each `ambiguous: true` (R4 / Feasibility Finding 1).
+ *  - **0 matches** (top-level/free-statement block, or a lambda whose start line
+ *    ≠ a symbol `startLine`): one `unresolved` entry (`id: null`) under the
+ *    block's file (R9 shadow path).
+ *
+ * Distinct `(filePath, fnLine)` pairs are queried once each (a block and its
+ * siblings in the same function share a pair), so the cost is O(distinct
+ * functions), not O(blocks).
+ */
+async function projectBlocksToSymbols(deps: {
+  lbugPath: string;
+  blockIds: string[];
+  executeParameterized: typeof executeParameterized;
+}): Promise<{ symbols: OwningSymbol[]; unresolvedCount: number; ambiguousCount: number }> {
+  const { lbugPath, blockIds, executeParameterized: exec } = deps;
+
+  // Group blocks by their (filePath, fnLine) owning-function key so each owning
+  // function is resolved with a single query regardless of block count.
+  const byFnKey = new Map<string, { filePath: string; symStart: number }>();
+  for (const id of blockIds) {
+    const filePath = fnFileOf(id);
+    const fnLine = fnLineOf(id); // 1-based
+    if (!filePath || !Number.isFinite(fnLine)) {
+      // Unparseable block id — record an unresolved key so it is reported, never
+      // dropped. Use the raw id as the key so duplicates collapse.
+      byFnKey.set(`#bad#${id}`, { filePath: filePath || id, symStart: NaN });
+      continue;
+    }
+    const symStart = fnLine - 1; // 0-based symbol startLine (reverse [symStart+1])
+    byFnKey.set(`${filePath}#${symStart}`, { filePath, symStart });
+  }
+
+  const resolved: OwningSymbol[] = [];
+  let unresolvedCount = 0;
+  let ambiguousCount = 0;
+
+  await Promise.all(
+    Array.from(byFnKey.values()).map(async ({ filePath, symStart }) => {
+      if (!Number.isFinite(symStart)) {
+        // Unparseable id — shadow-path unresolved under (best-effort) file.
+        resolved.push({ id: null, name: '(unresolved)', type: 'unresolved', filePath });
+        unresolvedCount += 1;
+        return;
+      }
+      // `Function`/`Method` carry name+filePath+startLine; the schema has NO
+      // `startColumn`, so the join is on (filePath, startLine) only. `filePath`
+      // and `symStart` are BOUND as params (KTD11 — never interpolated). A
+      // UNION ALL across the two explicit labels is used rather than a
+      // `(s:Function OR s:Method)` disjunction (unsupported in the LadybugDB
+      // Cypher subset — the established cross-label pattern, see
+      // `enrichCandidateLabels`). `LIMIT` is a small validated int literal.
+      const rows = await exec(
+        lbugPath,
+        `MATCH (s:\`Function\`)
+           WHERE s.filePath = $filePath AND s.startLine = $symStart
+           RETURN s.id AS id, s.name AS name, 'Function' AS label, s.startLine AS startLine
+         UNION ALL
+         MATCH (s:\`Method\`)
+           WHERE s.filePath = $filePath AND s.startLine = $symStart
+           RETURN s.id AS id, s.name AS name, 'Method' AS label, s.startLine AS startLine
+         LIMIT 8`,
+        { filePath, symStart },
+      ).catch(() => [] as any[]);
+
+      if (rows.length === 0) {
+        // No owning symbol — top-level/free-statement block or a lambda whose
+        // start line ≠ a symbol startLine. Shadow path: report under its file.
+        resolved.push({
+          id: null,
+          name: '(unresolved)',
+          type: 'unresolved',
+          filePath,
+          startLine: symStart,
+        });
+        unresolvedCount += 1;
+        return;
+      }
+
+      // >1 ⇒ ambiguous-projection (same-line, different-name functions). Report
+      // ALL colliding symbols, NEVER silently pick one (R4 / Feasibility 1).
+      const isAmbiguous = rows.length > 1;
+      for (const r of rows) {
+        resolved.push({
+          id: String((r as any).id ?? (r as any)[0] ?? ''),
+          name: String((r as any).name ?? (r as any)[1] ?? ''),
+          type: String((r as any).label ?? (r as any)[2] ?? 'Function'),
+          filePath,
+          startLine: Number((r as any).startLine ?? (r as any)[3] ?? symStart),
+          ...(isAmbiguous ? { ambiguous: true as const } : {}),
+        });
+      }
+      if (isAmbiguous) ambiguousCount += 1;
+    }),
+  );
+
+  // Deterministic order: by filePath, then startLine, then id (unresolved last
+  // within a file). Order-independence matters for the parity/fingerprint
+  // contract (KTD8 standing interchangeability) and for stable consumer output.
+  resolved.sort((a, b) => {
+    if (a.filePath !== b.filePath) return a.filePath < b.filePath ? -1 : 1;
+    const al = a.startLine ?? Number.MAX_SAFE_INTEGER;
+    const bl = b.startLine ?? Number.MAX_SAFE_INTEGER;
+    if (al !== bl) return al - bl;
+    const ai = a.id ?? '￿';
+    const bi = b.id ?? '￿';
+    return ai < bi ? -1 : ai > bi ? 1 : 0;
+  });
+
+  return { symbols: resolved, unresolvedCount, ambiguousCount };
+}
+
+/**
+ * Assemble the consumer-safe PDG impact result (U4 / KTD8 parity matrix).
+ *
+ * Takes the U3 traversal output (reachable block set + truncation signalling)
+ * plus the U4 block→symbol projection, and shapes a result STRUCTURALLY
+ * substitutable for the call-graph `_runImpactBFS` result so every consumer
+ * (CLI `formatImpactResult`, group `collectImpactSymbolUids`/`mergeRisk`,
+ * `impactByUid`) renders it without misrendering. This is a STANDING
+ * interchangeability contract, not a one-time check.
+ *
+ * Field-by-field vs the call-graph result (KTD8):
+ *  - `target.id/name/type/filePath` — identical shape (`collectImpactSymbolUids`
+ *    keys on `target.id`/`target.filePath`).
+ *  - `byDepth` — same `{ [depth]: item[] }` map shape, but COLLAPSED to a single
+ *    bucket (`1`): intra-procedural dependence has no meaningful inter-symbol hop
+ *    count (block-hops are NOT call-hops). Items carry `{ id, name, type,
+ *    filePath, … }` exactly like the call-graph items so `collectImpactSymbolUids`
+ *    collects their UIDs. `unresolved` shadow-path entries keep `id: null` (they
+ *    are surfaced, never dropped — but collect as no UID).
+ *  - `byDepthCounts` — `{ 1: <symbolCount> }`, same shape.
+ *  - `affected_processes` / `affected_modules` — empty `[]` (no
+ *    STEP_IN_PROCESS/module edges originate from BasicBlocks; consumers coalesce
+ *    `[]` safely).
+ *  - `epistemic` — a PDG-specific marker (`'pdg-intra-procedural'`), NOT the
+ *    callgraph DI/dynamic-dispatch `'lower-bound'` copy. `note` carries the
+ *    PDG framing so the CLI prints PDG text, not callgraph boundary text.
+ *  - `risk` — the existing `'UNKNOWN'` sentinel (NOT a new label). `mergeRisk`
+ *    already coalesces `'UNKNOWN'` correctly (never a confident `LOW`).
+ *  - `impactedCount` — count of DISTINCT owning SYMBOLS (resolved UIDs), the
+ *    meaningful unit for the impact question ("which symbols are affected").
+ *    `blockCount` is retained separately as the raw reachable-block count.
+ */
+function assemblePdgImpactResult(input: {
+  target: { id: string; name: string; type: string; filePath: string };
+  direction: 'upstream' | 'downstream';
+  reachableBlocks: string[];
+  projection: { symbols: OwningSymbol[]; unresolvedCount: number; ambiguousCount: number };
+  depthReached: number;
+  truncated: boolean;
+  truncatedBy?: 'depth' | 'limit';
+}): Record<string, unknown> {
+  const { target, direction, reachableBlocks, projection } = input;
+  const { symbols, unresolvedCount, ambiguousCount } = projection;
+
+  // Items for the single collapsed bucket. Shaped like the call-graph byDepth
+  // items (`{ depth, id, name, type, filePath, processes }`) so consumers that
+  // iterate byDepth read the same fields. `unresolved` entries keep `id: null`
+  // (surfaced under their file; `collectImpactSymbolUids` skips a null id, which
+  // is correct — there is no symbol UID to attribute).
+  const items = symbols.map((s) => ({
+    depth: 1,
+    id: s.id,
+    name: s.name,
+    type: s.type,
+    filePath: s.filePath,
+    ...(s.startLine !== undefined ? { startLine: s.startLine } : {}),
+    ...(s.ambiguous ? { ambiguous: true } : {}),
+    ...(s.id === null ? { unresolved: true } : {}),
+    processes: [] as unknown[],
+  }));
+
+  // impactedCount = distinct owning SYMBOLS (resolved UIDs). Unresolved shadow
+  // entries are surfaced in byDepth but do NOT inflate the symbol count.
+  const resolvedUids = new Set(symbols.filter((s) => s.id !== null).map((s) => s.id as string));
+  const impactedCount = resolvedUids.size;
+
+  const byDepth: Record<number, unknown[]> = items.length > 0 ? { 1: items } : {};
+  const byDepthCounts: Record<number, number> = { 1: items.length };
+
+  const noteParts: string[] = [
+    `mode:'pdg' — intra-procedural Program Dependence Graph. ${impactedCount} owning ` +
+      `${impactedCount === 1 ? 'symbol' : 'symbols'} reached via ${reachableBlocks.length} ` +
+      `dependence ${reachableBlocks.length === 1 ? 'block' : 'blocks'} ` +
+      `(${direction} over CDG + REACHING_DEF). Cross-function (inter-procedural) impact is ` +
+      `NOT modeled in this mode — use mode:'callgraph' for the call-graph blast radius.`,
+  ];
+  if (ambiguousCount > 0) {
+    noteParts.push(
+      `${ambiguousCount} owning-symbol ${ambiguousCount === 1 ? 'projection is' : 'projections are'} ` +
+        `ambiguous: same-line functions cannot be disambiguated by start line alone (no startColumn ` +
+        `in the schema), so ALL colliding symbols are reported — none is silently picked.`,
+    );
+  }
+  if (unresolvedCount > 0) {
+    noteParts.push(
+      `${unresolvedCount} reachable ${unresolvedCount === 1 ? 'block maps' : 'blocks map'} to no ` +
+        `owning Function/Method (top-level statement or a lambda whose start line is not a symbol ` +
+        `start) — surfaced under their file as 'unresolved', never dropped.`,
+    );
+  }
+
+  return {
+    mode: 'pdg',
+    target,
+    direction,
+    impactedCount,
+    // KTD8: reuse the existing UNKNOWN sentinel — never a confident LOW (which
+    // would read as "safe to refactor"; #2129/#1858 false-safe lineage). PDG
+    // mode is intra-procedural, so its count is a per-function lower bound on the
+    // true blast radius and risk is genuinely UNKNOWN at the program level.
+    risk: 'UNKNOWN',
+    // PDG-specific epistemic marker — NOT the callgraph 'lower-bound'/DI copy.
+    epistemic: 'pdg-intra-procedural',
+    note: noteParts.join(' '),
+    // Raw block-level detail retained alongside the symbol projection (U3 tests
+    // and the accuracy harness read these).
+    reachableBlocks,
+    blockCount: reachableBlocks.length,
+    depthReached: input.depthReached,
+    unresolvedBlockCount: unresolvedCount,
+    ambiguousProjectionCount: ambiguousCount,
+    ...(input.truncated ? { truncated: true } : {}),
+    ...(input.truncatedBy ? { truncatedBy: input.truncatedBy } : {}),
+    summary: {
+      direct: impactedCount,
+      processes_affected: 0,
+      modules_affected: 0,
+    },
+    byDepthCounts,
+    affected_processes: [] as unknown[],
+    affected_modules: [] as unknown[],
+    byDepth,
+  };
+}
+
 /** The two impact engines (KTD1). `'callgraph'` is the default/established path. */
 export type ImpactMode = 'callgraph' | 'pdg';
 
@@ -4833,7 +5133,14 @@ export class LocalBackend {
     executeParameterized: typeof executeParameterized;
   }): Promise<any> {
     const { repo, sym, direction, maxDepth, executeParameterized: exec } = deps;
-    const target = { name: sym.name, id: sym.id, filePath: sym.filePath };
+    // `target` carries the call-graph-compatible shape (id/name/type/filePath) so
+    // `collectImpactSymbolUids` keys on it identically to a callgraph result.
+    const target = {
+      id: sym.id,
+      name: sym.name,
+      type: deps.symType || 'Function',
+      filePath: sym.filePath,
+    };
 
     // Validate the per-step LIMIT as a positive integer (KTD11 — interpolated,
     // so it must be sanitised, never user-string-passed). A non-integer / out-of
@@ -4893,6 +5200,16 @@ export class LocalBackend {
           `Use mode:'callgraph' for its inter-procedural blast radius.`,
         impactedCount: 0,
         risk: 'UNKNOWN',
+        // KTD8 parity fields so a consumer iterating byDepth / reading the
+        // depth counts on a no-body result still finds a well-formed (empty)
+        // shape rather than `undefined` (which would render as "isolated").
+        byDepth: {} as Record<number, unknown[]>,
+        byDepthCounts: { 1: 0 } as Record<number, number>,
+        summary: { direct: 0, processes_affected: 0, modules_affected: 0 },
+        affected_processes: [] as unknown[],
+        affected_modules: [] as unknown[],
+        unresolvedBlockCount: 0,
+        ambiguousProjectionCount: 0,
       };
     }
 
@@ -4951,26 +5268,59 @@ export class LocalBackend {
 
     const reachableBlocks = [...reachable].sort();
     const truncated = truncatedByDepth || truncatedByLimit;
+    const truncatedBy: 'depth' | 'limit' | undefined = truncatedByDepth
+      ? 'depth'
+      : truncatedByLimit
+        ? 'limit'
+        : undefined;
 
-    return {
-      mode: 'pdg',
-      target,
+    // ── Has a PDG body but no intra-procedural dependence reachability ─────────
+    // Distinct from "no PDG body": the function exists and has blocks, but no
+    // CDG/REACHING_DEF edge leaves the target's blocks in this direction. Still
+    // not a confident zero — surface the explicit note + UNKNOWN (KTD6/KTD8).
+    if (reachableBlocks.length === 0) {
+      return {
+        mode: 'pdg',
+        target,
+        direction,
+        impactedCount: 0,
+        risk: 'UNKNOWN',
+        epistemic: 'pdg-intra-procedural',
+        note:
+          `'${sym.name}' has a PDG body but no intra-procedural ${direction} dependence edges ` +
+          `(no CDG/REACHING_DEF reachability from its blocks). This is distinct from "no PDG body". ` +
+          `Use mode:'callgraph' for its inter-procedural blast radius.`,
+        reachableBlocks: [] as string[],
+        blockCount: 0,
+        depthReached,
+        unresolvedBlockCount: 0,
+        ambiguousProjectionCount: 0,
+        ...(truncated ? { truncated: true } : {}),
+        ...(truncatedBy ? { truncatedBy } : {}),
+        byDepth: {} as Record<number, unknown[]>,
+        byDepthCounts: { 1: 0 } as Record<number, number>,
+        summary: { direct: 0, processes_affected: 0, modules_affected: 0 },
+        affected_processes: [] as unknown[],
+        affected_modules: [] as unknown[],
+      };
+    }
+
+    // ── U4: project reachable blocks → owning symbols, assemble parity result ──
+    const projection = await projectBlocksToSymbols({
+      lbugPath: repo.lbugPath,
+      blockIds: reachableBlocks,
+      executeParameterized: exec,
+    });
+
+    return assemblePdgImpactResult({
+      target: { id: sym.id, name: sym.name, type: deps.symType || 'Function', filePath: sym.filePath },
       direction,
       reachableBlocks,
-      blockCount: reachableBlocks.length,
+      projection,
       depthReached,
-      ...(truncated ? { truncated: true } : {}),
-      ...(truncatedByDepth ? { truncatedBy: 'depth' as const } : {}),
-      ...(truncatedByLimit && !truncatedByDepth ? { truncatedBy: 'limit' as const } : {}),
-      // U4 reshapes this into the consumer-safe impact result (block→symbol
-      // projection, byDepth/byDepthCounts, risk, parity matrix). U3 stops at the
-      // reachable block set + truncation signalling.
-      note:
-        reachableBlocks.length === 0
-          ? `'${sym.name}' has a PDG body but no intra-procedural ${direction} dependence edges ` +
-            `(no CDG/REACHING_DEF reachability from its blocks). This is distinct from "no PDG body".`
-          : undefined,
-    };
+      truncated,
+      truncatedBy,
+    });
   }
 
   /**
