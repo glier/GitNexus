@@ -219,6 +219,128 @@ export function formatImpactResult(result: any): string {
     return lines.join('\n');
   }
 
+  // ─── PDG mode (mode:'pdg') ────────────────────────────────────────────
+  // KTD8 presentation half. PDG results are intra-procedural Program
+  // Dependence Graph blast radii: the single collapsed `byDepth[1]` bucket
+  // has NO call-hop depth meaning (block-hops ≠ call-hops), so we must NOT
+  // reuse the callgraph "depth N / WILL BREAK (direct)" framing, the
+  // callgraph DI/dynamic-dispatch lower-bound copy, or the confident
+  // "isolated" zero. A degraded / no-body PDG result is INCONCLUSIVE, not
+  // safe-to-refactor — it gets the explicit caveat + remediation, never an
+  // empty blast radius. Detect on `mode:'pdg'` (every PDG return path —
+  // findings, degradation, no-body, no-dependence — carries it). Ambiguous
+  // PDG results carry `status:'ambiguous'` and are handled above; they never
+  // reach here.
+  if (result.mode === 'pdg') {
+    const name = target?.name || '?';
+
+    // (1) Degradation — the PDG layer (or a sub-layer) is absent/unreadable.
+    // `pdgLayer` is the non-'ready' state from `pdgLayerStatus`. Print the
+    // honest remediation, NOT a zero/empty blast radius.
+    if (result.pdgLayer) {
+      const subLayer = result.missingSubLayer
+        ? ` (missing sub-layer: ${result.missingSubLayer})`
+        : '';
+      return (
+        `${name}: PDG impact unavailable — the index has no usable PDG layer ` +
+        `[${result.pdgLayer}]${subLayer}. This is NOT "no impact". ` +
+        `Re-index with \`gitnexus analyze --pdg\` to build the control/data ` +
+        `dependence layer, or use \`--mode callgraph\` for the call-graph blast radius.` +
+        (result.note ? `\n${result.note}` : '')
+      );
+    }
+
+    // (2) No-body symbol (KTD6) — interface / type alias / abstract / ambient
+    // member / one-line declaration with no CFG. Show the caveat, never
+    // "isolated / no dependencies".
+    if (result.epistemic === 'no-pdg-body') {
+      return (
+        `${name}: PDG mode not applicable to this symbol — it has no PDG body ` +
+        `(no control/data dependence edges; e.g. an interface, type alias, ` +
+        `abstract/ambient member, or a one-line declaration). This is NOT a ` +
+        `confident "no impact". Use \`--mode callgraph\` for its inter-procedural ` +
+        `blast radius.` +
+        (result.note ? `\n${result.note}` : '')
+      );
+    }
+
+    const items: any[] = (result.byDepth && result.byDepth[1]) || [];
+    const bucketCount = result.byDepthCounts?.[1] ?? items.length;
+    const pdgLines: string[] = [];
+
+    // (3) Has a body but no intra-procedural dependence reachability.
+    // `impactedCount === 0` with no findings — still NOT "isolated": the count
+    // is a per-function lower bound, and inter-procedural impact is unmodeled.
+    if (total === 0 && bucketCount === 0) {
+      pdgLines.push(
+        `${name} (${direction}): no intra-procedural PDG-dependent symbols found. ` +
+          `This is NOT a confident "isolated / no dependencies" — cross-function ` +
+          `(inter-procedural) impact is not modeled in PDG mode. Use \`--mode callgraph\` ` +
+          `for the call-graph blast radius.`,
+      );
+    } else {
+      // (4) Findings — render the collapsed bucket under a "PDG-dependent
+      // symbols" heading (NOT "depth N"). `total` (impactedCount) is distinct
+      // owning SYMBOLS; `bucketCount` includes any `unresolved` shadow rows.
+      const dirLabel =
+        direction === 'upstream'
+          ? 'this depends on (intra-procedural)'
+          : 'depend on this (intra-procedural)';
+      pdgLines.push(
+        `PDG-dependent symbols for ${target?.kind || ''} ${name} (${direction}): ` +
+          `${total} symbol(s) ${dirLabel}`,
+      );
+      pdgLines.push('');
+      const shown = Math.min(items.length, 12);
+      for (const item of items.slice(0, shown)) {
+        const flags: string[] = [];
+        if (item.unresolved) flags.push('unresolved');
+        if (item.ambiguous) flags.push('ambiguous');
+        const flagStr = flags.length ? ` [${flags.join(', ')}]` : '';
+        pdgLines.push(`  ${item.type || ''} ${item.name} → ${item.filePath}${flagStr}`);
+      }
+      if (bucketCount > shown) {
+        pdgLines.push(`  ... and ${bucketCount - shown} more`);
+      }
+    }
+
+    // Intra-procedural caveat — always present for a non-degraded PDG result.
+    // The assembled `note` already carries the cross-function caveat + the
+    // ambiguous/unresolved breakdown; surface it verbatim so the CLI reader
+    // sees the same honesty the JSON consumer does.
+    if (result.note) {
+      pdgLines.push('');
+      pdgLines.push(`ℹ️  ${result.note}`);
+    } else {
+      pdgLines.push('');
+      pdgLines.push(
+        "ℹ️  Intra-procedural Program Dependence Graph — cross-function impact is not modeled in this mode.",
+      );
+    }
+
+    // Honest incompleteness signals (block-attribution + truncation).
+    if (result.ambiguousProjectionCount > 0) {
+      pdgLines.push(
+        `⚠️  ${result.ambiguousProjectionCount} block(s) could not be attributed to a ` +
+          `unique owning symbol (same-line functions) — all colliding symbols are shown.`,
+      );
+    }
+    if (result.unresolvedBlockCount > 0) {
+      pdgLines.push(
+        `⚠️  ${result.unresolvedBlockCount} dependence block(s) map to no owning ` +
+          `Function/Method (top-level statement / closure) — surfaced under their file.`,
+      );
+    }
+    if (result.truncated) {
+      const by = result.truncatedBy ? ` (by ${result.truncatedBy})` : '';
+      pdgLines.push(
+        `⚠️  Truncated${by} — the dependence traversal was bounded; deeper PDG impacts may exist.`,
+      );
+    }
+
+    return pdgLines.join('\n').trim();
+  }
+
   if (total === 0) {
     // #1858 — "isolated" is a confident claim. If an interface / indirection
     // boundary is on the path, the true count is a lower bound, not zero;
