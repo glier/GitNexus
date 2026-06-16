@@ -1,0 +1,21 @@
+{
+  "_doc": "U7 impact-PDG accuracy baselines. Two NON-byte-identity gates (KTD10): (1) annotationFingerprint — an order-independent digest over the curated ground-truth set; any unreviewed edit to a ground-truth.json trips it (re-baseline deliberately after review). (2) f1Bands — a ONE-SIDED F1 regression band per mode per scope: a DROP below (band - epsilon) fails; improvements pass freely. A `null` band means F1 is genuinely undefined for that (scope,mode) on this corpus (e.g. PDG reports an empty intra/inter CIS, or a scope has no defined-F1 case) — the gate skips it (nothing to regress against). measure.mjs --check applies median-of-K across GN_IMPACT_PDG_K runs before comparing, so substrate flakiness (the real-analyze lane, F5) cannot trip the band. Re-baseline: `node --import tsx bench/impact-pdg/measure.mjs --json` → copy annotationFingerprint and strata[scope][mode].f1 here, bump analyzerVersion if the analyzer moved.",
+  "analyzerVersion": "1.6.7",
+  "epsilon": 0.05,
+  "annotationFingerprint": "853565db5f732b11fb452a90f92c065ab93913a32e7e83f886fd585f420ad516",
+  "f1Bands": {
+    "intra": {
+      "callgraph": null,
+      "pdg": null
+    },
+    "inter": {
+      "callgraph": 1.0,
+      "pdg": null
+    },
+    "mixed": {
+      "callgraph": 0.711,
+      "pdg": null
+    }
+  },
+  "_f1BandsNote": "intra/* and *_pdg are null because the measured F1 is n/a on this corpus: PDG mode reports an empty symbol-level CIS for every measurable fixture (its block→symbol projection collapses a function's own dependence blocks onto the criterion, which the seed-exclusion drops), and callgraph intra-scope CIS is also empty (downstream/upstream over a self-contained function reaches no OTHER symbol). The only non-trivial F1 signal is callgraph on inter (1.0 — full cross-function recall) and mixed (0.711 — finds the callees, misses the intra criterion-self component). These two bands are the live regression guard; if a future change gives PDG a non-empty intra CIS (e.g. the deferred CONTAINS_BLOCK substrate edge), record its F1 here and the one-sided band starts guarding it."
+}
