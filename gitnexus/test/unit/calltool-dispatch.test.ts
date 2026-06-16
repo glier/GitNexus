@@ -1457,7 +1457,7 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     expect(undef).toEqual(absent);
   });
 
-  it("mode:'pdg' routes to the PDG stub and NEVER runs the callgraph BFS (KTD5)", async () => {
+  it("mode:'pdg' routes to the PDG traversal and NEVER runs the callgraph BFS (KTD5)", async () => {
     resolveSingleTarget();
     const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
     const result = await backend.callTool('impact', {
@@ -1465,10 +1465,13 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
       direction: 'upstream',
       mode: 'pdg',
     });
-    // Stub payload — pending until U3/U4.
-    expect(result.error).toMatch(/not yet implemented/);
+    // U3 landed — the call reaches the real `_runImpactPDG` traversal, not the
+    // old "not yet implemented" stub. It returns a pdg-shaped payload.
+    expect(result.error).toBeUndefined();
     expect(result.mode).toBe('pdg');
-    // The callgraph engine must never be invoked under a pdg call.
+    expect(Array.isArray(result.reachableBlocks)).toBe(true);
+    // The load-bearing KTD5 invariant: the callgraph engine must NEVER be
+    // invoked under a pdg call (no silent fallback).
     expect(bfsSpy).not.toHaveBeenCalled();
   });
 

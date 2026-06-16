@@ -97,6 +97,21 @@ function resolveAliasString(canonical: unknown, legacy: unknown): string | undef
   return undefined;
 }
 
+/**
+ * Parse the `<fnLine>` segment out of a `BasicBlock` id (1-based function start
+ * line). The id template is
+ *   `BasicBlock:<filePath>:<fnLine>:<fnCol>:<blockIdx>`
+ * and `<filePath>` may itself contain `':'` (a Windows drive letter), so the
+ * segments are taken from the RIGHT: `<blockIdx>` is last, `<fnCol>` second-last,
+ * `<fnLine>` third-last. Extracted from the `_pdgQueryImpl` closure (#2086) into
+ * a shared module-scope helper so the PDG impact traversal (U3/U4) reuses the
+ * exact same parse — the `pdg_query` read path is byte-identical to before.
+ */
+function fnLineOf(id: string): number {
+  const parts = id.split(':');
+  return Number(parts[parts.length - 3]);
+}
+
 /** The two impact engines (KTD1). `'callgraph'` is the default/established path. */
 export type ImpactMode = 'callgraph' | 'pdg';
 
@@ -3017,7 +3032,7 @@ export class LocalBackend {
   private async resolveBlockAnchor(
     repo: RepoHandle,
     target: string,
-    toolName: 'explain' | 'pdg_query',
+    toolName: 'explain' | 'pdg_query' | 'impact',
   ): Promise<{
     anchorClause: string;
     queryParams: Record<string, unknown>;
@@ -3541,12 +3556,7 @@ export class LocalBackend {
     }
 
     // basicBlockId = `BasicBlock:<filePath>:<fnLine>:<fnCol>:<blockIdx>` — split
-    // from the RIGHT (filePath may contain ':').
-    const fnLineOf = (id: string): number => {
-      const parts = id.split(':');
-      return Number(parts[parts.length - 3]);
-    };
-
+    // from the RIGHT (filePath may contain ':'). Shared module-scope `fnLineOf`.
     const results =
       mode === 'controls'
         ? rows.map((r: any) => {
@@ -4776,6 +4786,41 @@ export class LocalBackend {
    * The stub does not yet consume `executeParameterized` — the U3 anchor /
    * BFS / projection code joins here.
    */
+  /**
+   * U3 — the PDG blast-radius TRAVERSAL (KTD2, KTD4, KTD6, KTD11).
+   *
+   * Resolve the target symbol to its seed BasicBlocks, then run a direction-aware
+   * bounded BFS over `CDG` + `REACHING_DEF` block edges, returning the reachable
+   * block set with truncation signalling. Block→owning-symbol projection and the
+   * final impact-shaped result are U4 — this returns a PROVISIONAL payload
+   * exposing the reachable blocks for U4 to reshape:
+   *   { mode:'pdg', target, direction, reachableBlocks, blockCount,
+   *     truncated, depthReached, note? }
+   *
+   * ── KTD4 direction × edge-type truth table (the correctness keystone) ───────
+   * The combined CDG+RD frontier traverses the SAME sense for BOTH edge types
+   * under one `direction` label (mixing forward on one and reverse on the other
+   * is a silent correctness bug):
+   *   downstream — FORWARD on both: from a frontier block `a`, follow edges
+   *                `(a)-[CDG|REACHING_DEF]->(b)` and collect `b`. RD def→use
+   *                (where the def's value flows); CDG controller→dependent (what
+   *                this block controls). "What does changing this affect?"
+   *   upstream   — REVERSE on both: from a frontier block `b`, follow edges
+   *                `(a)-[CDG|REACHING_DEF]->(b)` and collect `a`. RD: the defs
+   *                reaching this block's uses; CDG: the blocks controlling it.
+   *                "What does this depend on?"
+   *
+   * ── KTD11 LadybugDB constraints ────────────────────────────────────────────
+   * Every step is ANCHORED on exact BasicBlock ids (`<endpoint>.id IN $frontier`
+   * — the tightest possible anchor, bound as a param, never interpolated),
+   * DEPTH-bounded (≤ `maxDepth` BFS rounds), and `LIMIT`-bounded via a validated
+   * integer interpolation (`LIMIT` cannot be parameterized in LadybugDB). The
+   * `(a:BasicBlock)-[..]->(b:BasicBlock)` label pair keeps every query on the
+   * sparse BasicBlock→BasicBlock partition, never a symbol-space scan.
+   *
+   * Deps are injected (KTD2 extraction discipline) so this can later move to a
+   * standalone `pdg-impact.ts` engine as a move, not a rewrite.
+   */
   private async _runImpactPDG(deps: {
     repo: RepoHandle;
     sym: { id: string; name: string; filePath: string };
@@ -4787,13 +4832,144 @@ export class LocalBackend {
     summaryOnly?: boolean;
     executeParameterized: typeof executeParameterized;
   }): Promise<any> {
+    const { repo, sym, direction, maxDepth, executeParameterized: exec } = deps;
+    const target = { name: sym.name, id: sym.id, filePath: sym.filePath };
+
+    // Validate the per-step LIMIT as a positive integer (KTD11 — interpolated,
+    // so it must be sanitised, never user-string-passed). A non-integer / out-of
+    // range value (NaN, 1.5, negative, huge) is CLAMPED to the bounded default
+    // rather than rejected: impact's `limit` is a soft page hint, and a clamp
+    // keeps the safety tool producing a (flagged-bounded) radius instead of a
+    // hard error. The clamp ceiling matches `pdg_query`'s validated max.
+    const rawLimit = deps.limit;
+    const stepLimit =
+      Number.isInteger(rawLimit) && rawLimit >= 1 && rawLimit <= PDG_QUERY_MAX_LIMIT
+        ? rawLimit
+        : PDG_QUERY_DEFAULT_LIMIT;
+    // Depth: clamp to a sane positive integer (the caller default is 3).
+    const depthBudget =
+      Number.isInteger(maxDepth) && maxDepth >= 1 ? maxDepth : 3;
+
+    // ── Seed: resolve the target symbol to its BasicBlocks (KTD2 reuse) ───────
+    // resolveBlockAnchor maps the symbol to its block id-prefix + the corrected
+    // [symStart+1, symEnd+1] line window (do NOT re-derive the 1-based-block /
+    // 0-based-symbol offset — the helper owns it). `'impact'` toolName widening
+    // makes any ambiguous-anchor message name THIS tool.
+    const resolved = await this.resolveBlockAnchor(repo, sym.name, 'impact');
+    if (resolved.early) return resolved.early;
+    const { anchorClause, queryParams } = resolved;
+
+    const seedRows = await exec(
+      repo.lbugPath,
+      `MATCH (a:BasicBlock) WHERE ${anchorClause} RETURN a.id AS id LIMIT ${stepLimit}`,
+      queryParams,
+    );
+    const seedBlocks: string[] = seedRows
+      .map((r: any) => String(r.id ?? r[0] ?? ''))
+      .filter((id: string) => id.length > 0);
+
+    // ── KTD6 no-body contract: distinguish "no PDG body" from "no dependence" ──
+    // A symbol that resolves but produces ZERO anchored blocks has no CFG body
+    // (interface / type alias / abstract / ambient / one-line const). A bare
+    // impactedCount:0 / risk:'LOW' would read as "safe to refactor" — the exact
+    // false-safe `impact` exists to prevent (#2129/#1858). Surface an explicit
+    // note + a non-LOW epistemic marker, never a silent confident zero.
+    if (seedBlocks.length === 0) {
+      return {
+        mode: 'pdg',
+        target,
+        direction,
+        reachableBlocks: [],
+        blockCount: 0,
+        truncated: false,
+        depthReached: 0,
+        // "No PDG body" — structurally no CFG/blocks for this symbol kind.
+        epistemic: 'no-pdg-body',
+        note:
+          `'${sym.name}' has no PDG body — no BasicBlocks / control- or data-dependence ` +
+          `edges exist for this symbol (e.g. an interface, type alias, abstract/ambient ` +
+          `member, or a one-line declaration with no CFG). This is NOT a confident ` +
+          `"no impact": the intra-procedural PDG mode cannot model this symbol kind. ` +
+          `Use mode:'callgraph' for its inter-procedural blast radius.`,
+        impactedCount: 0,
+        risk: 'UNKNOWN',
+      };
+    }
+
+    // ── Bounded direction-aware BFS over CDG + REACHING_DEF (KTD4, KTD11) ──────
+    // Seed blocks are NOT counted as reachable (they ARE the target); the
+    // reachable set is everything the BFS discovers from them. Visited tracks
+    // BOTH seeds and discovered blocks so a cycle never re-expands.
+    const visited = new Set<string>(seedBlocks);
+    const reachable = new Set<string>();
+    let frontier = [...seedBlocks];
+    let depthReached = 0;
+    // `truncatedByDepth`: the BFS still had a non-empty frontier when the depth
+    // budget ran out (more reachable blocks exist past `maxDepth`).
+    // `truncatedByLimit`: a single step's neighbour query hit the interpolated
+    // LIMIT, so that step's expansion is a lower bound. Either flags `truncated`.
+    let truncatedByDepth = false;
+    let truncatedByLimit = false;
+
+    // The endpoint the frontier is matched on, and the endpoint collected, flip
+    // by direction — but the SAME sense applies to BOTH edge types (KTD4).
+    //   downstream: frontier = source `a`, collect target `b`  (forward)
+    //   upstream:   frontier = target `b`, collect source `a`  (reverse)
+    const matchEndpoint = direction === 'downstream' ? 'a' : 'b';
+    const collectEndpoint = direction === 'downstream' ? 'b' : 'a';
+
+    for (let depth = 0; depth < depthBudget; depth++) {
+      if (frontier.length === 0) break;
+      // Anchored on exact frontier ids (bound as a param — KTD11). The edge-type
+      // discriminator is a hardcoded literal list (never user input). `LIMIT` is
+      // the validated integer `stepLimit`.
+      const rows = await exec(
+        repo.lbugPath,
+        `MATCH (a:BasicBlock)-[r:CodeRelation]->(b:BasicBlock)
+         WHERE r.type IN ['CDG', 'REACHING_DEF'] AND ${matchEndpoint}.id IN $frontier
+         RETURN DISTINCT ${collectEndpoint}.id AS id
+         LIMIT ${stepLimit}`,
+        { frontier },
+      );
+      depthReached = depth + 1;
+      if (rows.length >= stepLimit) truncatedByLimit = true;
+
+      const next: string[] = [];
+      for (const r of rows) {
+        const id = String((r as any).id ?? (r as any)[0] ?? '');
+        if (!id || visited.has(id)) continue;
+        visited.add(id);
+        reachable.add(id);
+        next.push(id);
+      }
+      frontier = next;
+    }
+    // Frontier still non-empty after exhausting the depth budget ⇒ more blocks
+    // are reachable beyond `maxDepth` (depth truncation, distinct from natural
+    // completion where the frontier drains to empty inside the loop).
+    if (frontier.length > 0) truncatedByDepth = true;
+
+    const reachableBlocks = [...reachable].sort();
+    const truncated = truncatedByDepth || truncatedByLimit;
+
     return {
-      error: 'pdg mode not yet implemented (U3/U4)',
       mode: 'pdg',
-      target: { name: deps.sym.name, id: deps.sym.id, filePath: deps.sym.filePath },
-      direction: deps.direction,
-      impactedCount: 0,
-      risk: 'UNKNOWN',
+      target,
+      direction,
+      reachableBlocks,
+      blockCount: reachableBlocks.length,
+      depthReached,
+      ...(truncated ? { truncated: true } : {}),
+      ...(truncatedByDepth ? { truncatedBy: 'depth' as const } : {}),
+      ...(truncatedByLimit && !truncatedByDepth ? { truncatedBy: 'limit' as const } : {}),
+      // U4 reshapes this into the consumer-safe impact result (block→symbol
+      // projection, byDepth/byDepthCounts, risk, parity matrix). U3 stops at the
+      // reachable block set + truncation signalling.
+      note:
+        reachableBlocks.length === 0
+          ? `'${sym.name}' has a PDG body but no intra-procedural ${direction} dependence edges ` +
+            `(no CDG/REACHING_DEF reachability from its blocks). This is distinct from "no PDG body".`
+          : undefined,
     };
   }
 

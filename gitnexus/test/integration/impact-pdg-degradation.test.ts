@@ -137,7 +137,7 @@ withTestLbugDB(
     });
 
     describe('ready (both caps stamped)', () => {
-      it('falls THROUGH the layer check to the traversal (the U2 _runImpactPDG stub)', async () => {
+      it('falls THROUGH the layer check to the real traversal (U3 _runImpactPDG)', async () => {
         vi.mocked(loadMeta).mockResolvedValueOnce(
           META({ maxCdgEdgesPerFunction: 0, maxReachingDefEdgesPerFunction: 0 } as any),
         );
@@ -147,13 +147,21 @@ withTestLbugDB(
           mode: 'pdg',
         });
         // The layer is complete, so the check did NOT short-circuit: there is no
-        // degradation note / pdgLayer marker — the call reached the stub instead.
+        // degradation note / pdgLayer marker — the call reached the traversal.
         expect(result.pdgLayer).toBeUndefined();
-        // U2: the traversal is still the stub. Once U3/U4 land this assertion
-        // updates to a real blast radius; the load-bearing fact for U2 is that
-        // `ready` did NOT return a degradation note.
+        // U3 landed: the stub "not yet implemented" error is gone. `hot` has a
+        // PDG body (blocks B0→B1) but the only dependent (B1) is itself a seed
+        // block of the symbol, so the intra-procedural downstream reachable set
+        // is empty — and that is signalled as a real traversal result with the
+        // distinct "has a body but no dependence" note, NOT the no-body /
+        // degradation path, NOT the old stub error. The load-bearing U2 fact —
+        // `ready` does NOT return a degradation note — still holds.
         expect(result.mode).toBe('pdg');
-        expect(result.error).toMatch(/not yet implemented/i);
+        expect(result.error).toBeUndefined();
+        expect(result.note).not.toMatch(/not yet implemented/i);
+        expect(Array.isArray(result.reachableBlocks)).toBe(true);
+        // Distinct from KTD6 "no PDG body": this symbol HAS a body.
+        expect(result.epistemic).not.toBe('no-pdg-body');
       });
     });
 
