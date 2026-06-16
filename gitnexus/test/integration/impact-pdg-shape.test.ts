@@ -37,10 +37,7 @@ import type { RepoMeta } from '../../src/storage/repo-manager.js';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { listRegisteredRepos } from '../../src/storage/repo-manager.js';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
-import {
-  collectImpactSymbolUids,
-  mergeRisk,
-} from '../../src/core/group/cross-impact.js';
+import { collectImpactSymbolUids, mergeRisk } from '../../src/core/group/cross-impact.js';
 import type { CrossRepoImpact } from '../../src/core/group/types.js';
 
 vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
@@ -177,7 +174,7 @@ withTestLbugDB(
         expect(result.summary.modules_affected).toBe(0);
       });
 
-      it("epistemic/note is PDG-specific, NOT the callgraph DI/dynamic-dispatch copy", async () => {
+      it('epistemic/note is PDG-specific, NOT the callgraph DI/dynamic-dispatch copy', async () => {
         const result = await downstream();
         // PDG marker, not the callgraph 'lower-bound'/'exact'.
         expect(result.epistemic).toBe('pdg-intra-procedural');
@@ -221,9 +218,7 @@ withTestLbugDB(
         // NEVER coerced to a confident 'LOW' (the false-safe this guards).
         expect(mergeRisk(localRisk, [])).toBe('UNKNOWN');
         // With a cross-repo hit, 'UNKNOWN' bumps UP to 'MEDIUM' (never down to LOW).
-        const cross = [
-          { contract: { confidence: 0.5 } },
-        ] as unknown as CrossRepoImpact[];
+        const cross = [{ contract: { confidence: 0.5 } }] as unknown as CrossRepoImpact[];
         expect(mergeRisk(localRisk, cross)).toBe('MEDIUM');
       });
     });

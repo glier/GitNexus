@@ -5,10 +5,7 @@
     "filePath": "src/facade.ts",
     "direction": "downstream",
     "marker": "enrich(order)",
-    "pdgEdgeKinds": [
-      "REACHING_DEF",
-      "CDG"
-    ]
+    "pdgEdgeKinds": ["REACHING_DEF", "CDG"]
   },
   "locus": "inter",
   "provenance": "manual",

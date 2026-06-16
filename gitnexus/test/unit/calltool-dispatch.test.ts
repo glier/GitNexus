@@ -105,7 +105,11 @@ import {
   REPO_ID_HASH_LENGTH,
   parseListReposPagination,
 } from '../../src/mcp/local/local-backend.js';
-import { listRegisteredRepos, cleanupOldKuzuFiles, loadMeta } from '../../src/storage/repo-manager.js';
+import {
+  listRegisteredRepos,
+  cleanupOldKuzuFiles,
+  loadMeta,
+} from '../../src/storage/repo-manager.js';
 import { getGitRoot } from '../../src/storage/git.js';
 import { _captureLogger } from '../../src/core/logger.js';
 import {
@@ -1514,7 +1518,13 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
   it("ambiguous target under mode:'pdg' never invokes the callgraph fan-out (KTD5 ambiguous trap)", async () => {
     // Two same-name Functions → resolver returns ambiguous.
     (executeParameterized as any).mockResolvedValue([
-      { id: 'func:login:1', name: 'login', type: 'Function', filePath: 'src/auth.ts', startLine: 5 },
+      {
+        id: 'func:login:1',
+        name: 'login',
+        type: 'Function',
+        filePath: 'src/auth.ts',
+        startLine: 5,
+      },
       {
         id: 'func:login:2',
         name: 'login',

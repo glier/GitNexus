@@ -37,7 +37,7 @@
 import { describe, it, expect, beforeAll, vi } from 'vitest';
 import type { RepoMeta } from '../../src/storage/repo-manager.js';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
-import { listRegisteredRepos, loadMeta } from '../../src/storage/repo-manager.js';
+import { listRegisteredRepos } from '../../src/storage/repo-manager.js';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 
 vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
@@ -234,7 +234,7 @@ withTestLbugDB(
     });
 
     describe('KTD11 injection safety', () => {
-      it("a target containing a quote/colon is bound, not interpolated (no crash, no injection)", async () => {
+      it('a target containing a quote/colon is bound, not interpolated (no crash, no injection)', async () => {
         // A malicious-looking target must flow through a bind param. It simply
         // resolves to not-found here (no such symbol) — never a Cypher error.
         const result = await backend.callTool('impact', {

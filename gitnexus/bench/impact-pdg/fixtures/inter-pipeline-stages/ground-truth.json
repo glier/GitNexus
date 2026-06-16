@@ -5,10 +5,7 @@
     "filePath": "src/pipeline.ts",
     "direction": "downstream",
     "marker": "stageTransform(acc)",
-    "pdgEdgeKinds": [
-      "REACHING_DEF",
-      "CDG"
-    ]
+    "pdgEdgeKinds": ["REACHING_DEF", "CDG"]
   },
   "locus": "inter",
   "provenance": "manual",

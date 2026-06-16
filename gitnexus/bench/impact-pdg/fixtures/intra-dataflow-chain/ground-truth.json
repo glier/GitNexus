@@ -11,9 +11,24 @@
   "provenance": "manual",
   "analyzerVersion": "1.6.7",
   "intra_AIS": [
-    { "symbol": "chainCompute", "filePath": "src/chain.ts", "line": 8, "note": "`b = a * 2` is directly data-dependent on the def of `a`" },
-    { "symbol": "chainCompute", "filePath": "src/chain.ts", "line": 9, "note": "`c = b - 3` is transitively data-dependent on `a` via `b`" },
-    { "symbol": "chainCompute", "filePath": "src/chain.ts", "line": 10, "note": "`return c` is transitively data-dependent on `a` via the chain" }
+    {
+      "symbol": "chainCompute",
+      "filePath": "src/chain.ts",
+      "line": 8,
+      "note": "`b = a * 2` is directly data-dependent on the def of `a`"
+    },
+    {
+      "symbol": "chainCompute",
+      "filePath": "src/chain.ts",
+      "line": 9,
+      "note": "`c = b - 3` is transitively data-dependent on `a` via `b`"
+    },
+    {
+      "symbol": "chainCompute",
+      "filePath": "src/chain.ts",
+      "line": 10,
+      "note": "`return c` is transitively data-dependent on `a` via the chain"
+    }
   ],
   "inter_AIS": [],
   "rationale": "Criterion's changed statement is the def of `a` (line 7). A straight-line REACHING_DEF chain carries `a` -> `b` (line 8) -> `c` (line 9) -> `return` (line 10). Every downstream statement in the function is data-dependent on `a`; none escapes the function (no calls, no annotated caller). intra_AIS is exactly the three downstream lines; inter_AIS is empty. This case stresses transitive forward def->use reachability with no control structure, isolating the RD-forward arm of the KTD4 truth table."

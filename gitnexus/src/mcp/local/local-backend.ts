@@ -5154,8 +5154,7 @@ export class LocalBackend {
         ? rawLimit
         : PDG_QUERY_DEFAULT_LIMIT;
     // Depth: clamp to a sane positive integer (the caller default is 3).
-    const depthBudget =
-      Number.isInteger(maxDepth) && maxDepth >= 1 ? maxDepth : 3;
+    const depthBudget = Number.isInteger(maxDepth) && maxDepth >= 1 ? maxDepth : 3;
 
     // ── Seed: resolve the target symbol to its BasicBlocks (KTD2 reuse) ───────
     // resolveBlockAnchor maps the symbol to its block id-prefix + the corrected
@@ -5313,7 +5312,12 @@ export class LocalBackend {
     });
 
     return assemblePdgImpactResult({
-      target: { id: sym.id, name: sym.name, type: deps.symType || 'Function', filePath: sym.filePath },
+      target: {
+        id: sym.id,
+        name: sym.name,
+        type: deps.symType || 'Function',
+        filePath: sym.filePath,
+      },
       direction,
       reachableBlocks,
       projection,

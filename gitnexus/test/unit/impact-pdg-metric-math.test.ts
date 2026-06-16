@@ -235,7 +235,17 @@ describe('impact-pdg metric math — annotation fingerprint (KTD10)', () => {
   it('trips when the criterion direction flips', () => {
     const base = M.fingerprintAnnotationSet([fx({})], fakeHash);
     const flipped = M.fingerprintAnnotationSet(
-      [fx({ criterion: { name: 'f', filePath: 'src/f.ts', direction: 'upstream', marker: 'x', pdgEdgeKinds: ['REACHING_DEF'] } })],
+      [
+        fx({
+          criterion: {
+            name: 'f',
+            filePath: 'src/f.ts',
+            direction: 'upstream',
+            marker: 'x',
+            pdgEdgeKinds: ['REACHING_DEF'],
+          },
+        }),
+      ],
       fakeHash,
     );
     expect(flipped).not.toBe(base);
@@ -243,11 +253,25 @@ describe('impact-pdg metric math — annotation fingerprint (KTD10)', () => {
 
   it('is STABLE under a pure reordering of AIS entries within a case', () => {
     const a = M.fingerprintAnnotationSet(
-      [fx({ intra_AIS: [{ symbol: 'f', filePath: 'src/f.ts', line: 3 }, { symbol: 'f', filePath: 'src/f.ts', line: 5 }] })],
+      [
+        fx({
+          intra_AIS: [
+            { symbol: 'f', filePath: 'src/f.ts', line: 3 },
+            { symbol: 'f', filePath: 'src/f.ts', line: 5 },
+          ],
+        }),
+      ],
       fakeHash,
     );
     const b = M.fingerprintAnnotationSet(
-      [fx({ intra_AIS: [{ symbol: 'f', filePath: 'src/f.ts', line: 5 }, { symbol: 'f', filePath: 'src/f.ts', line: 3 }] })],
+      [
+        fx({
+          intra_AIS: [
+            { symbol: 'f', filePath: 'src/f.ts', line: 5 },
+            { symbol: 'f', filePath: 'src/f.ts', line: 3 },
+          ],
+        }),
+      ],
       fakeHash,
     );
     expect(a).toBe(b);

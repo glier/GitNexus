@@ -5,10 +5,7 @@
     "filePath": "src/mixed.ts",
     "direction": "downstream",
     "marker": "score + v",
-    "pdgEdgeKinds": [
-      "REACHING_DEF",
-      "CDG"
-    ]
+    "pdgEdgeKinds": ["REACHING_DEF", "CDG"]
   },
   "locus": "mixed",
   "provenance": "manual",

@@ -314,7 +314,7 @@ export function formatImpactResult(result: any): string {
     } else {
       pdgLines.push('');
       pdgLines.push(
-        "ℹ️  Intra-procedural Program Dependence Graph — cross-function impact is not modeled in this mode.",
+        'ℹ️  Intra-procedural Program Dependence Graph — cross-function impact is not modeled in this mode.',
       );
     }
 

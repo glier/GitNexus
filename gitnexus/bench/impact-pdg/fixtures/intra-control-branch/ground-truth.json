@@ -5,10 +5,7 @@
     "filePath": "src/branch.ts",
     "direction": "downstream",
     "marker": "'zero'",
-    "pdgEdgeKinds": [
-      "REACHING_DEF",
-      "CDG"
-    ]
+    "pdgEdgeKinds": ["REACHING_DEF", "CDG"]
   },
   "locus": "intra",
   "provenance": "manual",

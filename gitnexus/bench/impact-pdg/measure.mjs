@@ -123,7 +123,9 @@ async function analyzeAndImpact(fx, home, { pdgOn = true } = {}) {
   // reads the REAL registry under getGlobalDir() (no mock). A fresh backend per
   // fixture avoids cross-fixture pool/registry caching.
   process.env.GITNEXUS_HOME = home;
-  const { LocalBackend } = await import(path.join(REPO_ROOT, 'src', 'mcp', 'local', 'local-backend.ts'));
+  const { LocalBackend } = await import(
+    path.join(REPO_ROOT, 'src', 'mcp', 'local', 'local-backend.ts')
+  );
   const backend = new LocalBackend();
   await backend.init();
 
@@ -177,11 +179,7 @@ async function validateFixture(fx, work, exec) {
   // marker (the same technique the U6 smoke test uses) and count CDG/RD edges
   // sourced inside them.
   const marker = fx.gt.criterion.marker;
-  const blocks = await exec(
-    lbugPath,
-    `MATCH (b:BasicBlock) RETURN b.id AS id, b.text AS text`,
-    {},
-  );
+  const blocks = await exec(lbugPath, `MATCH (b:BasicBlock) RETURN b.id AS id, b.text AS text`, {});
   const idsByAnchor = new Map();
   let anchor;
   for (const b of blocks) {
@@ -237,9 +235,12 @@ async function validateFixture(fx, work, exec) {
 
   const problems = [];
   if (!anchor) problems.push(`criterion blocks not locatable via marker ${JSON.stringify(marker)}`);
-  if (critEdges === 0) problems.push('criterion produces ZERO PDG edges (unmeasurable ground truth)');
+  if (critEdges === 0)
+    problems.push('criterion produces ZERO PDG edges (unmeasurable ground truth)');
   if (sameLineCollision)
-    problems.push('criterion shares (filePath,startLine) with another Function/Method (R4 ambiguity)');
+    problems.push(
+      'criterion shares (filePath,startLine) with another Function/Method (R4 ambiguity)',
+    );
   return { critEdges, sameLineCollision, problems, measurable: problems.length === 0 };
 }
 
@@ -343,7 +344,9 @@ function decisionRecommendation(strata, underpowered, exclusions) {
       `the symbol BFS chain natively into the PDG and give intra reach a symbol-level meaning.`,
   );
   if (exclusions.length > 0) {
-    lines.push(`Excluded from scoring: ${exclusions.map((e) => `${e.name} (${e.reason})`).join('; ')}.`);
+    lines.push(
+      `Excluded from scoring: ${exclusions.map((e) => `${e.name} (${e.reason})`).join('; ')}.`,
+    );
   }
   return lines.join('\n');
 }
@@ -400,7 +403,8 @@ async function run() {
 
       for (const fx of fixtures) {
         if (fx.excluded) {
-          if (runIdx === 0) exclusions.push({ name: fx.name, reason: 'no-body (pdgScoring:exclude / KTD6)' });
+          if (runIdx === 0)
+            exclusions.push({ name: fx.name, reason: 'no-body (pdgScoring:exclude / KTD6)' });
           continue;
         }
         const { work, results } = await analyzeAndImpact(fx, home, { pdgOn: true });
@@ -408,8 +412,7 @@ async function run() {
           // Step 0 — reconcile annotation against the live traversal.
           const v = await validateFixture(fx, work, exec);
           if (!v.measurable) {
-            if (runIdx === 0)
-              exclusions.push({ name: fx.name, reason: v.problems.join(' + ') });
+            if (runIdx === 0) exclusions.push({ name: fx.name, reason: v.problems.join(' + ') });
             continue;
           }
 
@@ -498,8 +501,12 @@ async function run() {
     report[s] = {};
     for (const m of MODES) {
       const f1s = perRunStrata.map((r) => r[s][m].f1).filter((v) => v !== null && v !== undefined);
-      const pmeds = perRunStrata.map((r) => r[s][m].precision).filter((v) => v !== null && v !== undefined);
-      const rmeds = perRunStrata.map((r) => r[s][m].recall).filter((v) => v !== null && v !== undefined);
+      const pmeds = perRunStrata
+        .map((r) => r[s][m].precision)
+        .filter((v) => v !== null && v !== undefined);
+      const rmeds = perRunStrata
+        .map((r) => r[s][m].recall)
+        .filter((v) => v !== null && v !== undefined);
       report[s][m] = {
         ...strata0[s][m],
         f1: f1s.length ? median(f1s) : null,
@@ -516,12 +523,15 @@ async function run() {
   );
   const underpowered =
     measurableTotal < FLOOR_TOTAL ||
-    SCOPES.some((s) => Math.max(report[s].callgraph.nCases, report[s].pdg.nCases) < FLOOR_PER_STRATUM);
+    SCOPES.some(
+      (s) => Math.max(report[s].callgraph.nCases, report[s].pdg.nCases) < FLOOR_PER_STRATUM,
+    );
 
   const annotationFingerprint = fingerprintAnnotationSet(fixtures, sha256);
 
   const machineReport = {
-    analyzerVersion: JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8')).version,
+    analyzerVersion: JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'))
+      .version,
     corpus: { total: fixtures.length, measurable: measurableTotal, excluded: exclusions },
     underpowered,
     floor: { perStratum: FLOOR_PER_STRATUM, total: FLOOR_TOTAL },

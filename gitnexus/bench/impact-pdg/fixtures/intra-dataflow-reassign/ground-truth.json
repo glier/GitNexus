@@ -11,8 +11,18 @@
   "provenance": "manual",
   "analyzerVersion": "1.6.7",
   "intra_AIS": [
-    { "symbol": "reassignSum", "filePath": "src/reassign.ts", "line": 7, "note": "first def `total = a` reaches the criterion use transitively via the second def" },
-    { "symbol": "reassignSum", "filePath": "src/reassign.ts", "line": 8, "note": "second def `total = total + b` is the immediately-reaching def of the criterion use" }
+    {
+      "symbol": "reassignSum",
+      "filePath": "src/reassign.ts",
+      "line": 7,
+      "note": "first def `total = a` reaches the criterion use transitively via the second def"
+    },
+    {
+      "symbol": "reassignSum",
+      "filePath": "src/reassign.ts",
+      "line": 8,
+      "note": "second def `total = total + b` is the immediately-reaching def of the criterion use"
+    }
   ],
   "inter_AIS": [],
   "rationale": "Direction is UPSTREAM: the criterion `reassignSum`'s relevant statement is the `return total` use (line 9), and we ask which definitions reach it. The immediately-reaching def is line 8 (`total = total + b`); that def itself uses `total`, whose reaching def is line 7 (`total = a`). Both defs are upstream data-dependencies of the criterion use, both intra-procedural. intra_AIS = {line 7, line 8}; inter_AIS empty. This isolates the RD-reverse arm of the KTD4 truth table and a reassigned variable's def chain."

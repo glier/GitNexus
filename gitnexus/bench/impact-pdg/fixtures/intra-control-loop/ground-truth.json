@@ -5,10 +5,7 @@
     "filePath": "src/loop.ts",
     "direction": "upstream",
     "marker": "count + 1",
-    "pdgEdgeKinds": [
-      "REACHING_DEF",
-      "CDG"
-    ]
+    "pdgEdgeKinds": ["REACHING_DEF", "CDG"]
   },
   "locus": "intra",
   "provenance": "manual",

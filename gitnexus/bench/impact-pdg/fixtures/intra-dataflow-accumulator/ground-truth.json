@@ -5,10 +5,7 @@
     "filePath": "src/accumulator.ts",
     "direction": "downstream",
     "marker": "sum + x",
-    "pdgEdgeKinds": [
-      "REACHING_DEF",
-      "CDG"
-    ]
+    "pdgEdgeKinds": ["REACHING_DEF", "CDG"]
   },
   "locus": "intra",
   "provenance": "manual",

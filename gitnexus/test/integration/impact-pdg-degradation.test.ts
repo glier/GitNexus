@@ -52,7 +52,7 @@ const SEED = [
 const SEED_EDGE = `MATCH (a:BasicBlock {id: 'BasicBlock:src/hot.ts:1:0:0'}), (b:BasicBlock {id: 'BasicBlock:src/hot.ts:1:0:1'})
   CREATE (a)-[:CodeRelation {type: 'CDG', confidence: 1.0, reason: 'T', step: 0}]->(b)`;
 
-const META = (pdg?: RepoMeta['pdg']): RepoMeta => ({ pdg } as unknown as RepoMeta);
+const META = (pdg?: RepoMeta['pdg']): RepoMeta => ({ pdg }) as unknown as RepoMeta;
 
 withTestLbugDB(
   'impact-pdg-degradation',

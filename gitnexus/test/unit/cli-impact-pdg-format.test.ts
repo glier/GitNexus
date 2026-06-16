@@ -144,7 +144,7 @@ describe('formatImpactResult — PDG (mode:pdg) rendering', () => {
     const out = formatImpactResult({
       mode: 'pdg',
       pdgLayer: 'no-layer',
-      note: "No PDG layer in this index. Run `gitnexus analyze --pdg` to build it.",
+      note: 'No PDG layer in this index. Run `gitnexus analyze --pdg` to build it.',
       target: { name: 'computeTotal' },
       direction: 'downstream',
       impactedCount: 0,
@@ -178,7 +178,12 @@ describe('formatImpactResult — PDG (mode:pdg) rendering', () => {
     // Shaped like `_runImpactPDG`'s no-body early return.
     const out = formatImpactResult({
       mode: 'pdg',
-      target: { id: 'Interface:src/types.ts:Card', name: 'Card', type: 'Interface', filePath: 'src/types.ts' },
+      target: {
+        id: 'Interface:src/types.ts:Card',
+        name: 'Card',
+        type: 'Interface',
+        filePath: 'src/types.ts',
+      },
       direction: 'downstream',
       reachableBlocks: [],
       blockCount: 0,
@@ -213,7 +218,12 @@ describe('formatImpactResult — PDG (mode:pdg) rendering', () => {
     // `_runImpactPDG` reachableBlocks.length === 0 path (body exists, no edges).
     const out = formatImpactResult({
       mode: 'pdg',
-      target: { id: 'Function:src/svc.ts:noop', name: 'noop', type: 'Function', filePath: 'src/svc.ts' },
+      target: {
+        id: 'Function:src/svc.ts:noop',
+        name: 'noop',
+        type: 'Function',
+        filePath: 'src/svc.ts',
+      },
       direction: 'downstream',
       impactedCount: 0,
       risk: 'UNKNOWN',

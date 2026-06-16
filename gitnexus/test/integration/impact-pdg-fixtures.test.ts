@@ -213,7 +213,9 @@ describe('U6 — impact-PDG fixture ground-truth schema', () => {
           expect(c.marker!.length).toBeGreaterThan(0);
           // The marker must appear in the criterion file's source.
           const src = fs.readFileSync(path.join(fx.dir, c.filePath), 'utf8');
-          expect(src.includes(c.marker!), `marker ${JSON.stringify(c.marker)} in source`).toBe(true);
+          expect(src.includes(c.marker!), `marker ${JSON.stringify(c.marker)} in source`).toBe(
+            true,
+          );
           // Measurable cases declare which PDG edge kinds the criterion produces.
           expect(Array.isArray(c.pdgEdgeKinds), `${fx.name} needs criterion.pdgEdgeKinds`).toBe(
             true,
@@ -346,10 +348,7 @@ describe('U6 — impact-PDG fixtures analyze under {pdg:true} with measurable cr
         ).toBeGreaterThan(0);
       }
       if (kinds.includes('CDG')) {
-        expect(
-          crit.cdg,
-          `${fx.name} criterion declares CDG but produced none`,
-        ).toBeGreaterThan(0);
+        expect(crit.cdg, `${fx.name} criterion declares CDG but produced none`).toBeGreaterThan(0);
       }
     }, 60000);
   }

@@ -183,7 +183,9 @@ export function aisByScope(gt) {
   const critKey = symbolKey(gt.criterion.name, gt.criterion.filePath);
   const intra = new Set();
   if (Array.isArray(gt.intra_AIS) && gt.intra_AIS.length > 0) intra.add(critKey);
-  const inter = toKeySet((gt.inter_AIS ?? []).map((e) => ({ symbol: e.symbol, filePath: e.filePath })));
+  const inter = toKeySet(
+    (gt.inter_AIS ?? []).map((e) => ({ symbol: e.symbol, filePath: e.filePath })),
+  );
   return { criterionKey: critKey, intra, inter, mixed: new Set([...intra, ...inter]) };
 }
 

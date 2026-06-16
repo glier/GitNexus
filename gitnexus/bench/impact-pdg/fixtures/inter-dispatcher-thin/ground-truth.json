@@ -5,10 +5,7 @@
     "filePath": "src/dispatcher.ts",
     "direction": "downstream",
     "marker": "kind === 'b'",
-    "pdgEdgeKinds": [
-      "REACHING_DEF",
-      "CDG"
-    ]
+    "pdgEdgeKinds": ["REACHING_DEF", "CDG"]
   },
   "locus": "inter",
   "provenance": "manual",
