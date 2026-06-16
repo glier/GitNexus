@@ -47,6 +47,14 @@ vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
     listRegisteredRepos: vi.fn().mockResolvedValue([]),
     cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
     findSiblingClones: vi.fn().mockResolvedValue([]),
+    // U2: expose loadMeta as a spy that delegates to the REAL implementation by
+    // default (so branch-scope resolution, #2106, is unaffected). The
+    // impact-mode block overrides it per-test to stamp a READY PDG layer, so the
+    // U2 layer-presence probe falls THROUGH to the post-check surface (the
+    // `_runImpactPDG` stub / ambiguous fan-out) those tests assert. The
+    // four-state degradation contract itself is covered in
+    // test/integration/impact-pdg-degradation.test.ts.
+    loadMeta: vi.fn(actual.loadMeta),
   };
 });
 
@@ -97,7 +105,7 @@ import {
   REPO_ID_HASH_LENGTH,
   parseListReposPagination,
 } from '../../src/mcp/local/local-backend.js';
-import { listRegisteredRepos, cleanupOldKuzuFiles } from '../../src/storage/repo-manager.js';
+import { listRegisteredRepos, cleanupOldKuzuFiles, loadMeta } from '../../src/storage/repo-manager.js';
 import { getGitRoot } from '../../src/storage/git.js';
 import { _captureLogger } from '../../src/core/logger.js';
 import {
@@ -1409,6 +1417,13 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     platformMocks.isVectorExtensionSupportedByPlatform.mockReturnValue(true);
+    // U2: stamp a READY PDG layer (both caps) so the layer-presence probe in
+    // `_impactImpl` falls THROUGH to the mode-dispatch surface these tests pin
+    // (the `_runImpactPDG` stub / the ambiguous fan-out under `mode:'pdg'`).
+    // Degraded-layer behavior is owned by the integration degradation suite.
+    vi.mocked(loadMeta).mockResolvedValue({
+      pdg: { maxCdgEdgesPerFunction: 0, maxReachingDefEdgesPerFunction: 0 },
+    } as any);
     backend = new LocalBackend();
     setupSingleRepo();
     await backend.init();

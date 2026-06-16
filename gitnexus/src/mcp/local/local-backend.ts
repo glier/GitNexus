@@ -122,6 +122,159 @@ function validateImpactMode(rawMode: unknown): { mode: ImpactMode } | { error: s
     error: `Invalid "mode": expected "callgraph" or "pdg", got ${JSON.stringify(rawMode)}.`,
   };
 }
+
+/** The two independently-stamped PDG sub-layers (KTD7). */
+export type PdgSubLayer = 'CDG' | 'REACHING_DEF';
+
+/**
+ * Four-state PDG-layer presence/degradation status (KTD7).
+ *
+ * - `'no-layer'`         — `meta.pdg` is absent: this repo was never analyzed
+ *                          with `--pdg` (definitive; established with NO DB scan).
+ * - `'sub-layer-missing'`— exactly one of the two independently-stamped caps
+ *                          (`maxCdgEdgesPerFunction` / `maxReachingDefEdgesPerFunction`)
+ *                          is present. `impact`'s PDG mode needs BOTH, so a
+ *                          partial layer must not be reported as complete; the
+ *                          missing one is named in `missingSubLayer`.
+ * - `'ready'`            — both caps present: the layer is fully stamped.
+ * - `'unknown'`          — meta is unreadable (e.g. a seeded test DB with no
+ *                          `meta.json`). One bounded `LIMIT 1` probe distinguishes
+ *                          a genuinely edge-free index from a missing one; either
+ *                          way the conclusion is inconclusive (a missing layer is
+ *                          indistinguishable from an all-linear one — #2188).
+ */
+export interface PdgLayerStatus {
+  state: 'no-layer' | 'sub-layer-missing' | 'ready' | 'unknown';
+  /** Set only for `'sub-layer-missing'` — the cap that was NOT stamped. */
+  missingSubLayer?: PdgSubLayer;
+  /** Human-readable guidance for the degraded states (absent for `'ready'`). */
+  note?: string;
+}
+
+/**
+ * Per-cap presence read from `meta.pdg`, plus whether meta was readable at all.
+ *
+ * `metaReadable` is the seam between the `'unknown'` state (meta unreadable —
+ * fall through to a DB probe) and the meta-stamped states. When `metaReadable`
+ * is true but `meta.pdg` was absent, both `cdg`/`rd` are `false`.
+ */
+interface PdgMetaCaps {
+  metaReadable: boolean;
+  /** `maxCdgEdgesPerFunction !== undefined` (only meaningful when metaReadable). */
+  cdg: boolean;
+  /** `maxReachingDefEdgesPerFunction !== undefined` (only meaningful when metaReadable). */
+  rd: boolean;
+}
+
+/**
+ * Read the two PDG sub-layer caps from the on-disk `meta.json` stamp — the
+ * single shared meta-probe both `_pdgQueryImpl` (one cap) and the PDG impact
+ * mode (both caps) key on. Never scans the DB. An unreadable / missing meta
+ * yields `metaReadable: false` (the `'unknown'` seam); a readable meta with no
+ * `pdg` stamp yields `metaReadable: true` with both caps `false` (no-layer).
+ */
+async function readPdgMetaCaps(
+  lbugPath: string,
+  loadMetaFn: typeof loadMeta,
+): Promise<PdgMetaCaps> {
+  try {
+    const meta = await loadMetaFn(path.dirname(lbugPath));
+    if (!meta) return { metaReadable: false, cdg: false, rd: false };
+    return {
+      metaReadable: true,
+      cdg: meta.pdg?.maxCdgEdgesPerFunction !== undefined,
+      rd: meta.pdg?.maxReachingDefEdgesPerFunction !== undefined,
+    };
+  } catch {
+    // Meta unreadable — the caller decides from the DB (the `'unknown'` state).
+    return { metaReadable: false, cdg: false, rd: false };
+  }
+}
+
+/**
+ * Project the both-caps PDG meta read down to the single mode-relevant cap that
+ * `_pdgQueryImpl` keys on (`controls` → CDG, `flows` → REACHING_DEF), preserving
+ * its established tri-state `boolean | undefined` contract byte-for-byte
+ * (Feasibility Issue 4):
+ *   - `false`     — meta readable and the relevant cap absent → definitive
+ *                   no-layer (short-circuits before any DB scan).
+ *   - `true`      — meta readable and the relevant cap present → proceed.
+ *   - `undefined` — meta unreadable → defer to the post-anchored-query probe.
+ *
+ * `_pdgQueryImpl` needs only ONE cap, so it collapses the both-caps read here
+ * rather than consuming `pdgLayerStatus` directly (whose `'unknown'` state does
+ * an upfront global probe — wrong timing/order for the anchored-query path).
+ */
+async function pdgStampForMode(
+  lbugPath: string,
+  mode: 'controls' | 'flows',
+  loadMetaFn: typeof loadMeta = loadMeta,
+): Promise<boolean | undefined> {
+  const caps = await readPdgMetaCaps(lbugPath, loadMetaFn);
+  if (!caps.metaReadable) return undefined;
+  return mode === 'controls' ? caps.cdg : caps.rd;
+}
+
+/**
+ * PDG-layer presence/degradation check for the `impact` PDG mode (KTD7).
+ *
+ * Returns the four distinct states WITHOUT scanning the DB except for the single
+ * bounded `LIMIT 1` probe the `'unknown'` (meta-unreadable) case requires. The
+ * caller (`_impactImpl` PDG branch, and the accuracy harness) surfaces a
+ * distinct signal per state so a missing `--pdg` layer / partial layer is never
+ * silently misread as a confident empty blast radius. Impact needs BOTH the CDG
+ * and the REACHING_DEF sub-layer, so a partial stamp degrades, not proceeds.
+ *
+ * Deps are injected (KTD2 extraction discipline) so this can move to a future
+ * `pdg-impact.ts` engine as a move, not a rewrite.
+ */
+async function pdgLayerStatus(deps: {
+  lbugPath: string;
+  executeParameterized: typeof executeParameterized;
+  loadMetaFn?: typeof loadMeta;
+}): Promise<PdgLayerStatus> {
+  const loadMetaFn = deps.loadMetaFn ?? loadMeta;
+  const caps = await readPdgMetaCaps(deps.lbugPath, loadMetaFn);
+
+  if (caps.metaReadable) {
+    // Meta is readable — the stamp is authoritative, no DB scan needed.
+    if (caps.cdg && caps.rd) return { state: 'ready' };
+    if (caps.cdg !== caps.rd) {
+      // Exactly one sub-layer stamped (XOR) — partial layer; impact needs both.
+      const missingSubLayer: PdgSubLayer = caps.cdg ? 'REACHING_DEF' : 'CDG';
+      return {
+        state: 'sub-layer-missing',
+        missingSubLayer,
+        note:
+          `PDG layer is incomplete — the ${missingSubLayer} sub-layer is missing ` +
+          `(impact's PDG mode needs both CDG and REACHING_DEF). ` +
+          `Re-run gitnexus analyze --pdg to record it.`,
+      };
+    }
+    // Neither cap stamped (meta.pdg absent, or present with no caps) → the layer
+    // was never recorded. Definitive, no DB scan.
+    return {
+      state: 'no-layer',
+      note: 'no PDG layer — run gitnexus analyze --pdg to record CDG + REACHING_DEF edges for this repo',
+    };
+  }
+
+  // Meta unreadable (e.g. a seeded test DB): one bounded probe confirms the
+  // layer status is genuinely undeterminable from the DB. A missing layer is
+  // indistinguishable from an all-linear (edge-free) one (#2188), so whether the
+  // probe finds a row or not the note stays inconclusive ("status unknown") —
+  // never the definitive no-layer wording. The probe is bounded (LIMIT 1) and
+  // anchored on the edge-type discriminator, never an unbounded path scan.
+  await deps.executeParameterized(
+    deps.lbugPath,
+    `MATCH (:BasicBlock)-[r:CodeRelation]->(:BasicBlock) WHERE r.type IN ['CDG', 'REACHING_DEF'] RETURN r.type AS type LIMIT 1`,
+    {},
+  );
+  return {
+    state: 'unknown',
+    note: 'PDG layer status unknown — no CDG/REACHING_DEF edges visible and meta is unreadable; was this repo indexed with gitnexus analyze --pdg?',
+  };
+}
 // AI context generation is CLI-only (gitnexus analyze)
 // import { generateAIContextFiles } from '../../cli/ai-context.js';
 
@@ -3322,18 +3475,13 @@ export class LocalBackend {
     // Cheap meta probe: the layer exists iff the pdg stamp carries the
     // mode-relevant cap (maxCdgEdgesPerFunction for CDG, maxReachingDef…
     // for REACHING_DEF). Absent ⇒ the no-layer hint without a DB scan.
-    let pdgStamped: boolean | undefined;
-    try {
-      const meta = await loadMeta(path.dirname(repo.lbugPath));
-      if (meta) {
-        pdgStamped =
-          mode === 'controls'
-            ? meta.pdg?.maxCdgEdgesPerFunction !== undefined
-            : meta.pdg?.maxReachingDefEdgesPerFunction !== undefined;
-      }
-    } catch {
-      /* meta unreadable — decide from the DB below */
-    }
+    // `pdgStampForMode` is the shared meta read (the both-caps `pdgLayerStatus`
+    // helper consumes the same underlying read for impact); here we project it
+    // down to this one mode's cap, preserving the tri-state `boolean | undefined`
+    // contract byte-for-byte: `false` ⇒ definitive no-layer (short-circuit
+    // below), `true` ⇒ proceed, `undefined` ⇒ meta unreadable, defer to the
+    // post-anchored-query probe (Feasibility Issue 4).
+    const pdgStamped = await pdgStampForMode(repo.lbugPath, mode);
     if (pdgStamped === false) {
       return { mode, results: [], total: 0, note: NO_PDG_NOTE };
     }
@@ -4317,10 +4465,35 @@ export class LocalBackend {
       }
     }
 
-    // (2) PDG-layer presence probe — STUB for U1; U2 fills in the four-state
-    // degradation contract (no-layer / partial / unknown / ready) here, before
-    // any DB scan, so a missing `--pdg` layer returns a guidance note rather
-    // than a confusing empty traversal. Intentionally a no-op for now.
+    // (2) PDG-layer presence probe (U2, KTD7) — the four-state degradation
+    // contract, BEFORE resolveSymbolCandidates / any traversal. A repo never
+    // analyzed with `--pdg` (no-layer), one with only a partial layer
+    // (sub-layer-missing — impact needs BOTH CDG and REACHING_DEF), or one whose
+    // meta is unreadable (unknown) each returns a distinct guidance note here
+    // rather than a confusing empty blast radius. Only `ready` falls through to
+    // the traversal (the `_runImpactPDG` stub until U3/U4). This fires before the
+    // stub deliberately, so a degraded layer is reported as such, not as
+    // "pdg mode not yet implemented".
+    if (mode === 'pdg') {
+      const layer = await pdgLayerStatus({
+        lbugPath: repo.lbugPath,
+        executeParameterized,
+      });
+      if (layer.state !== 'ready') {
+        return {
+          mode,
+          pdgLayer: layer.state,
+          ...(layer.missingSubLayer ? { missingSubLayer: layer.missingSubLayer } : {}),
+          note: layer.note,
+          target: { name: target },
+          direction,
+          // No confident zero: a degraded layer is inconclusive, not "safe to
+          // refactor". UNKNOWN (KTD8) — never LOW (#2129/#1858 false-safe).
+          impactedCount: 0,
+          risk: 'UNKNOWN',
+        };
+      }
+    }
 
     const maxDepth = params.maxDepth || 3;
     // Map legacy relation type names before filtering (backward compat for OVERRIDES → METHOD_OVERRIDES)
