@@ -251,6 +251,100 @@ withTestLbugDB(
       });
     });
 
+    // ── FIX 1 keystone: the PDG seed anchors on the ALREADY-RESOLVED symbol ───
+    // The seed must NOT be re-resolved by bare `sym.name` inside `_runImpactPDG`
+    // (that would re-ambiguate a file_path/uid-disambiguated name, or anchor on a
+    // DIFFERENT same-name symbol → wrong-symbol blast radius). With two functions
+    // named `sameName` in different files, disambiguating by file_path/target_uid
+    // must (a) produce the CORRECT file's blast radius, and (b) NEVER fall into
+    // the callgraph `_runImpactBFS` fan-out.
+    describe('seed anchors on the resolved (disambiguated) symbol, not a name re-resolution', () => {
+      it('file_path disambiguation reaches the right file’s downstream owner (not the other same-name fn)', async () => {
+        const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+        try {
+          const result = await backend.callTool('impact', {
+            target: 'sameName',
+            file_path: 'src/b.ts',
+            direction: 'downstream',
+            mode: 'pdg',
+          });
+          // Resolved cleanly (NOT the ambiguous early payload) and it is a PDG result.
+          expect(result.status).not.toBe('ambiguous');
+          expect(result.mode).toBe('pdg');
+          expect(result.error).toBeUndefined();
+          // The target is the B-file `sameName`, and the blast radius reflects B's
+          // downstream owner `onlyB` — NEVER A's `onlyA` (the wrong-file anchor).
+          expect(result.target.id).toBe('func:sameB');
+          expect(result.target.filePath).toBe('src/b.ts');
+          const names = new Set(
+            Object.values(result.byDepth as Record<number, any[]>)
+              .flat()
+              .map((i: any) => i.name),
+          );
+          expect(names.has('onlyB')).toBe(true);
+          expect(names.has('onlyA')).toBe(false);
+          // KTD5: no callgraph engine ran under the pdg call.
+          expect(bfsSpy).not.toHaveBeenCalled();
+        } finally {
+          bfsSpy.mockRestore();
+        }
+      });
+
+      it('target_uid disambiguation anchors the seed on THAT uid (not a re-ambiguation)', async () => {
+        const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+        try {
+          const result = await backend.callTool('impact', {
+            target: 'sameName',
+            target_uid: 'func:sameA',
+            direction: 'downstream',
+            mode: 'pdg',
+          });
+          expect(result.status).not.toBe('ambiguous');
+          expect(result.mode).toBe('pdg');
+          expect(result.target.id).toBe('func:sameA');
+          expect(result.target.filePath).toBe('src/a.ts');
+          const names = new Set(
+            Object.values(result.byDepth as Record<number, any[]>)
+              .flat()
+              .map((i: any) => i.name),
+          );
+          expect(names.has('onlyA')).toBe(true);
+          expect(names.has('onlyB')).toBe(false);
+          expect(bfsSpy).not.toHaveBeenCalled();
+        } finally {
+          bfsSpy.mockRestore();
+        }
+      });
+    });
+
+    // ── fnFileOf Windows-path coverage (split-from-right) ─────────────────────
+    // The block→owning-symbol projector (`projectBlocksToSymbols`) recovers each
+    // block's file path via `fnFileOf`, which must split a `BasicBlock` id FROM
+    // THE RIGHT so a Windows drive-letter ':' inside the path is not mistaken for
+    // a segment delimiter. Exercised behaviorally (fnFileOf is module-scope, not
+    // exported) — mirrors how pdg-query.test.ts pins `fnLineOf` with a `C:/...` id.
+    describe('fnFileOf recovers a Windows-style (drive-colon) path', () => {
+      it('projects a downstream block whose id carries a C:/ drive path to its owning symbol', async () => {
+        const result = await backend.callTool('impact', {
+          target: 'winFn',
+          direction: 'downstream',
+          mode: 'pdg',
+        });
+        expect(result.error).toBeUndefined();
+        expect(result.mode).toBe('pdg');
+        const items = Object.values(result.byDepth as Record<number, any[]>).flat();
+        // The downstream Windows block `BasicBlock:C:/src/win.ts:21:0:0` owns
+        // `winUse` (0-based startLine 20). If `fnFileOf` split from the LEFT it
+        // would yield `C` (the drive letter) as the path and fail to resolve the
+        // owning symbol — surfacing it as unresolved instead. Correct split-from-
+        // right recovers `C:/src/win.ts` and resolves `winUse`.
+        const winUse = items.find((i: any) => i.name === 'winUse');
+        expect(winUse).toBeDefined();
+        expect(winUse.id).toBe('func:winUse');
+        expect(winUse.filePath).toBe('C:/src/win.ts');
+      });
+    });
+
     // ── No-body symbol parity (KTD6 × KTD8) ───────────────────────────────────
     describe('no-body symbol still yields a parity-shaped (non-LOW) result', () => {
       it('an interface (no CFG body) returns the no-body note + well-formed empty shape', async () => {
@@ -328,6 +422,75 @@ withTestLbugDB(
       await edge('CDG', K1, K2, 'T');
       await edge('CDG', K2, T, 'T');
       await edge('CDG', T, U, 'T');
+
+      // ── Windows drive-colon path fixture (exercises fnFileOf split-from-right) ─
+      // Separate file `C:/src/win.ts`, isolated from `target`'s graph so the
+      // existing impactedCount/byDepth assertions are untouched. `winFn` is its
+      // own seed target; a downstream RD block (`:21:`) owns `winUse`.
+      const WF = 'C:/src/win.ts';
+      const winFnSeed = `BasicBlock:${WF}:11:0:0`; // winFn@0-based[10,12] ⇒ window [11,13]
+      const winUseBlk = `BasicBlock:${WF}:21:0:0`; // winUse@0-based[20,20] ⇒ fnLine 21
+      const winNode = (
+        id: string,
+        name: string,
+        startLine: number,
+        endLine: number,
+        type: 'Function' = 'Function',
+      ) =>
+        adapter.executePrepared(
+          `CREATE (n:${type} {id: $id, name: $name, filePath: $filePath, startLine: $startLine, endLine: $endLine, isExported: true, content: 'x', description: 'win fixture'})`,
+          { id, name, filePath: WF, startLine, endLine },
+        );
+      const winBlock = (id: string, startLine: number, text: string) =>
+        adapter.executePrepared(
+          `CREATE (b:BasicBlock {id: $id, filePath: $filePath, startLine: $startLine, endLine: $startLine, text: $text})`,
+          { id, filePath: WF, startLine, text },
+        );
+      await winNode('func:winFn', 'winFn', 10, 12);
+      await winNode('func:winUse', 'winUse', 20, 20);
+      await winBlock(winFnSeed, 11, 'const w = win();');
+      await winBlock(winUseBlk, 21, 'useWin(w);');
+      await edge('REACHING_DEF', winFnSeed, winUseBlk, 'w');
+
+      // ── Same-name-in-different-files fixture (FIX 1 keystone: seed must anchor
+      // on the file_path/uid-disambiguated symbol, NOT re-resolve by bare name) ──
+      // Two functions BOTH named `sameName`, in `src/a.ts` and `src/b.ts`, each
+      // with a DISTINCT downstream owner (`onlyA` vs `onlyB`). A correct seed
+      // (anchored on the already-resolved symbol's file+span) reaches only the
+      // chosen file's downstream block; a re-resolution by bare `sameName` would
+      // either re-ambiguate or anchor on the wrong file.
+      const AFILE = 'src/a.ts';
+      const BFILE = 'src/b.ts';
+      const sameSeedA = `BasicBlock:${AFILE}:11:0:0`; // sameName@A 0-based[10,10] ⇒ window [11,11]
+      const onlyABlk = `BasicBlock:${AFILE}:21:0:0`; // onlyA@0-based[20,20] ⇒ fnLine 21
+      const sameSeedB = `BasicBlock:${BFILE}:11:0:0`; // sameName@B 0-based[10,10] ⇒ window [11,11]
+      const onlyBBlk = `BasicBlock:${BFILE}:21:0:0`; // onlyB@0-based[20,20] ⇒ fnLine 21
+      const node2 = (
+        id: string,
+        name: string,
+        filePath: string,
+        startLine: number,
+        endLine: number,
+      ) =>
+        adapter.executePrepared(
+          `CREATE (n:Function {id: $id, name: $name, filePath: $filePath, startLine: $startLine, endLine: $endLine, isExported: true, content: 'x', description: 'samename fixture'})`,
+          { id, name, filePath, startLine, endLine },
+        );
+      const block2 = (id: string, filePath: string, startLine: number, text: string) =>
+        adapter.executePrepared(
+          `CREATE (b:BasicBlock {id: $id, filePath: $filePath, startLine: $startLine, endLine: $startLine, text: $text})`,
+          { id, filePath, startLine, text },
+        );
+      await node2('func:sameA', 'sameName', AFILE, 10, 10);
+      await node2('func:onlyA', 'onlyA', AFILE, 20, 20);
+      await node2('func:sameB', 'sameName', BFILE, 10, 10);
+      await node2('func:onlyB', 'onlyB', BFILE, 20, 20);
+      await block2(sameSeedA, AFILE, 11, 'const a = mk();');
+      await block2(onlyABlk, AFILE, 21, 'useA(a);');
+      await block2(sameSeedB, BFILE, 11, 'const b = mk();');
+      await block2(onlyBBlk, BFILE, 21, 'useB(b);');
+      await edge('REACHING_DEF', sameSeedA, onlyABlk, 'a');
+      await edge('REACHING_DEF', sameSeedB, onlyBBlk, 'b');
 
       vi.mocked(listRegisteredRepos).mockResolvedValue([
         {

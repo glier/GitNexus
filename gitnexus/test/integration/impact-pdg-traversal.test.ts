@@ -106,7 +106,7 @@ withTestLbugDB(
         expect(set).not.toContain(D2);
       });
 
-      it('downstream CDG reaches the controlled blocks', async () => {
+      it('downstream CDG reaches the controlled blocks, never the controller', async () => {
         const result = await backend.callTool('impact', {
           target: 'target',
           direction: 'downstream',
@@ -116,6 +116,15 @@ withTestLbugDB(
         // forward over CDG: S controls K1 controls K2.
         expect(set).toContain(K1);
         expect(set).toContain(K2);
+        // CDG-precision exclusion: the CONTROLLER `P` (the CDG predecessor of S)
+        // must NOT appear downstream — it is an *upstream* block. A CDG
+        // direction/precision bug (e.g. traversing the CDG edge in reverse) would
+        // leak P into the downstream set; pin it so such a bug fails here.
+        // (D1/D2 are legitimately present downstream via the REACHING_DEF edges —
+        // the combined CDG+RD frontier is one direction over BOTH edge types — so
+        // the meaningful CDG-precision exclusion is the controller, not the RD
+        // uses; the combined-frontier test below pins the exact {D1,D2,K1,K2} set.)
+        expect(set).not.toContain(P);
       });
 
       it('upstream CDG reaches the controller, not the controlled blocks', async () => {

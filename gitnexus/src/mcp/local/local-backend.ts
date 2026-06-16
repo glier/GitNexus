@@ -227,6 +227,13 @@ async function projectBlocksToSymbols(deps: {
       // `(s:Function OR s:Method)` disjunction (unsupported in the LadybugDB
       // Cypher subset — the established cross-label pattern, see
       // `enrichCandidateLabels`). `LIMIT` is a small validated int literal.
+      // FIX 6: do NOT swallow a query failure as `[]`. A DB error (lock /
+      // corruption / missing path) must NOT masquerade as a genuine no-owning-
+      // symbol result — that would silently inflate `unresolvedCount` and hide
+      // the failure. Letting it reject propagates through `Promise.all` →
+      // `projectBlocksToSymbols` → `_runImpactPDG` → `_impactImpl` up to the
+      // `impact()` structured-error catch, where it surfaces as a real error
+      // with a recovery suggestion (rather than a clean-looking partial radius).
       const rows = await exec(
         lbugPath,
         `MATCH (s:\`Function\`)
@@ -238,7 +245,7 @@ async function projectBlocksToSymbols(deps: {
            RETURN s.id AS id, s.name AS name, 'Method' AS label, s.startLine AS startLine
          LIMIT 8`,
         { filePath, symStart },
-      ).catch(() => [] as any[]);
+      );
 
       if (rows.length === 0) {
         // No owning symbol — top-level/free-statement block or a lambda whose
@@ -285,6 +292,33 @@ async function projectBlocksToSymbols(deps: {
   });
 
   return { symbols: resolved, unresolvedCount, ambiguousCount };
+}
+
+/**
+ * The KTD8 parity fields a PDG impact result carries even when it short-circuits
+ * to an empty radius (degraded layer / no PDG body / no dependence reachability).
+ *
+ * A programmatic consumer iterating `byDepth`, reading `byDepthCounts[1]`, or
+ * coalescing `affected_processes`/`affected_modules` must find a well-formed
+ * (empty) shape on EVERY early return, not `undefined` (which would render as
+ * "isolated"/"no data" instead of "inconclusive"). The CLI branches on
+ * `pdgLayer` first so it is safe regardless, but the JSON contract must be
+ * uniform across all three early returns — this single source guarantees that.
+ */
+function emptyPdgParityFields(): {
+  byDepth: Record<number, unknown[]>;
+  byDepthCounts: Record<number, number>;
+  summary: { direct: number; processes_affected: number; modules_affected: number };
+  affected_processes: unknown[];
+  affected_modules: unknown[];
+} {
+  return {
+    byDepth: {},
+    byDepthCounts: { 1: 0 },
+    summary: { direct: 0, processes_affected: 0, modules_affected: 0 },
+    affected_processes: [],
+    affected_modules: [],
+  };
 }
 
 /**
@@ -577,17 +611,37 @@ async function pdgLayerStatus(deps: {
   // Meta unreadable (e.g. a seeded test DB): one bounded probe confirms the
   // layer status is genuinely undeterminable from the DB. A missing layer is
   // indistinguishable from an all-linear (edge-free) one (#2188), so whether the
-  // probe finds a row or not the note stays inconclusive ("status unknown") —
-  // never the definitive no-layer wording. The probe is bounded (LIMIT 1) and
-  // anchored on the edge-type discriminator, never an unbounded path scan.
-  await deps.executeParameterized(
-    deps.lbugPath,
-    `MATCH (:BasicBlock)-[r:CodeRelation]->(:BasicBlock) WHERE r.type IN ['CDG', 'REACHING_DEF'] RETURN r.type AS type LIMIT 1`,
-    {},
-  );
+  // probe finds a row or not the state stays `'unknown'` (never the definitive
+  // no-layer wording). The probe is bounded (`LIMIT 1`) and anchored on the
+  // BasicBlock→BasicBlock partition (the `(:BasicBlock)…(:BasicBlock)` label pair
+  // restricts it to the sparse pdg-edge partition, never a global rel scan — the
+  // established `_explainImpl` anchoring pattern), and it is wrapped so a db-lock
+  // / missing-path throw degrades to the same `'unknown'` signal rather than
+  // propagating and losing it.
+  //
+  // The probe result is NOT discarded: a visible CDG/REACHING_DEF edge (with
+  // meta unreadable) is a weak-but-real "edges are present, but completeness is
+  // unprovable" signal, distinct from "no edges visible at all". Both stay
+  // `'unknown'` (inconclusive), but the note distinguishes them so the operator
+  // gets the more useful hint.
+  let edgesVisible = false;
+  try {
+    const rows = await deps.executeParameterized(
+      deps.lbugPath,
+      `MATCH (:BasicBlock)-[r:CodeRelation]->(:BasicBlock) WHERE r.type IN ['CDG', 'REACHING_DEF'] RETURN r.type AS type LIMIT 1`,
+      {},
+    );
+    edgesVisible = Array.isArray(rows) && rows.length > 0;
+  } catch {
+    // db-lock / missing-path / corrupt probe — fall through as not-visible, but
+    // keep the `'unknown'` signal (a probe failure must not lose it).
+    edgesVisible = false;
+  }
   return {
     state: 'unknown',
-    note: 'PDG layer status unknown — no CDG/REACHING_DEF edges visible and meta is unreadable; was this repo indexed with gitnexus analyze --pdg?',
+    note: edgesVisible
+      ? 'PDG layer status unknown — CDG/REACHING_DEF edges ARE visible but meta is unreadable, so the layer cannot be confirmed complete (a partial layer looks the same); was this repo fully indexed with gitnexus analyze --pdg?'
+      : 'PDG layer status unknown — no CDG/REACHING_DEF edges visible and meta is unreadable; was this repo indexed with gitnexus analyze --pdg?',
   };
 }
 // AI context generation is CLI-only (gitnexus analyze)
@@ -3411,6 +3465,47 @@ export class LocalBackend {
   }
 
   /**
+   * Build the SAME BasicBlock seed anchor (`anchorClause` + `queryParams`) as
+   * `resolveBlockAnchor`'s symbol branch, but from an ALREADY-RESOLVED symbol —
+   * WITHOUT re-running `resolveSymbolCandidates`.
+   *
+   * Why this exists (correctness keystone): `_impactImpl` already resolves the
+   * target to a confident single symbol honoring the caller's
+   * `target_uid`/`file_path`/`kind` hints. Re-resolving by the bare `sym.name`
+   * inside `_runImpactPDG` would (a) RE-AMBIGUATE a globally-ambiguous name the
+   * caller had disambiguated (returning the "ambiguous" early payload instead of
+   * the PDG result), or (b) anchor the seed on a DIFFERENT same-name symbol in
+   * another file → a wrong-symbol blast radius. Anchoring directly from the
+   * resolved `{ filePath, startLine, endLine }` preserves the disambiguation.
+   *
+   * The window is byte-identical to `resolveBlockAnchor`'s symbol branch: BOTH
+   * span bounds are shifted `+1` (1-based BasicBlock `startLine` vs the 0-based
+   * symbol span — the lower `+1` excludes a neighbor's block on the line above,
+   * the upper `+1` keeps a guard/def/use on the final line). A symbol with no
+   * usable span degrades to the same file-level id-prefix filter. This is the
+   * resolved-symbol counterpart, NOT a second window convention.
+   */
+  private blockAnchorForResolvedSymbol(sym: {
+    filePath: string;
+    startLine?: number;
+    endLine?: number;
+  }): { anchorClause: string; queryParams: Record<string, unknown> } {
+    const idPrefix = `BasicBlock:${sym.filePath}:`;
+    if (
+      typeof sym.startLine === 'number' &&
+      typeof sym.endLine === 'number' &&
+      sym.endLine >= sym.startLine
+    ) {
+      return {
+        anchorClause:
+          'a.id STARTS WITH $idPrefix AND a.startLine >= $symStart AND a.startLine <= $symEnd',
+        queryParams: { idPrefix, symStart: sym.startLine + 1, symEnd: sym.endLine + 1 },
+      };
+    }
+    return { anchorClause: 'a.id STARTS WITH $idPrefix', queryParams: { idPrefix } };
+  }
+
+  /**
    * Explain tool (#2083 M3 U6) — persisted taint-finding explanation.
    * WAL-aware wrapper mirroring `context`.
    */
@@ -4801,6 +4896,10 @@ export class LocalBackend {
           // refactor". UNKNOWN (KTD8) — never LOW (#2129/#1858 false-safe).
           impactedCount: 0,
           risk: 'UNKNOWN',
+          // KTD8 parity: the no-body / no-dependence PDG returns carry these, so
+          // the degraded return must too — a programmatic consumer iterating
+          // byDepth / reading byDepthCounts must not get `undefined` here.
+          ...emptyPdgParityFields(),
         };
       }
     }
@@ -5027,6 +5126,10 @@ export class LocalBackend {
       id: outcome.symbol.id,
       name: outcome.symbol.name,
       filePath: outcome.symbol.filePath,
+      // Carry the resolved span so the PDG seed anchors on THIS symbol directly,
+      // without re-resolving its (possibly ambiguous) name (FIX 1).
+      startLine: outcome.symbol.startLine,
+      endLine: outcome.symbol.endLine,
     };
     const symType = outcome.resolvedLabel || outcome.symbol.type || '';
 
@@ -5041,8 +5144,6 @@ export class LocalBackend {
         direction,
         maxDepth,
         limit: Number.isFinite(params.limit) ? params.limit : 100,
-        offset: Number.isFinite(params.offset) ? params.offset : 0,
-        summaryOnly: params.summaryOnly,
         // KTD2 extraction-seam discipline: hand the engine its DB dependency
         // explicitly rather than `this.`-binding it, so the traversal (U3/U4)
         // can later move to a standalone `pdg-impact.ts` as a move, not a
@@ -5069,23 +5170,6 @@ export class LocalBackend {
     });
   }
 
-  /**
-   * PDG-backed blast radius (`mode:'pdg'`) — STUB (U1).
-   *
-   * The real engine (U3/U4) resolves the target symbol to its BasicBlocks,
-   * runs a direction-aware bounded BFS over the persisted `CDG` +
-   * `REACHING_DEF` edges (KTD4 truth table, KTD11 query constraints), then
-   * projects the reachable blocks back to owning symbols and assembles a
-   * consumer-safe result (KTD8 parity matrix). U1 ships only the param /
-   * validation surface, so this returns a structured "pending" payload.
-   *
-   * KTD2 extraction-seam discipline: written as a method taking its DB
-   * dependency as an explicit parameter (not reaching back through `this.` for
-   * the query path) so the traversal can later be lifted to a standalone
-   * `gitnexus/src/mcp/local/pdg-impact.ts` engine as a *move*, not a rewrite.
-   * The stub does not yet consume `executeParameterized` — the U3 anchor /
-   * BFS / projection code joins here.
-   */
   /**
    * U3 — the PDG blast-radius TRAVERSAL (KTD2, KTD4, KTD6, KTD11).
    *
@@ -5123,13 +5207,11 @@ export class LocalBackend {
    */
   private async _runImpactPDG(deps: {
     repo: RepoHandle;
-    sym: { id: string; name: string; filePath: string };
+    sym: { id: string; name: string; filePath: string; startLine?: number; endLine?: number };
     symType: string;
     direction: 'upstream' | 'downstream';
     maxDepth: number;
     limit: number;
-    offset: number;
-    summaryOnly?: boolean;
     executeParameterized: typeof executeParameterized;
   }): Promise<any> {
     const { repo, sym, direction, maxDepth, executeParameterized: exec } = deps;
@@ -5156,14 +5238,16 @@ export class LocalBackend {
     // Depth: clamp to a sane positive integer (the caller default is 3).
     const depthBudget = Number.isInteger(maxDepth) && maxDepth >= 1 ? maxDepth : 3;
 
-    // ── Seed: resolve the target symbol to its BasicBlocks (KTD2 reuse) ───────
-    // resolveBlockAnchor maps the symbol to its block id-prefix + the corrected
-    // [symStart+1, symEnd+1] line window (do NOT re-derive the 1-based-block /
-    // 0-based-symbol offset — the helper owns it). `'impact'` toolName widening
-    // makes any ambiguous-anchor message name THIS tool.
-    const resolved = await this.resolveBlockAnchor(repo, sym.name, 'impact');
-    if (resolved.early) return resolved.early;
-    const { anchorClause, queryParams } = resolved;
+    // ── Seed: anchor the target's BasicBlocks from the ALREADY-RESOLVED symbol ─
+    // `_impactImpl` already resolved `sym` to a confident single match honoring
+    // the caller's target_uid/file_path/kind hints. Re-resolving by the bare
+    // `sym.name` here would RE-AMBIGUATE a disambiguated name (returning the
+    // "ambiguous" early payload instead of the PDG result) or anchor the seed on
+    // a DIFFERENT same-name symbol in another file (wrong-symbol blast radius).
+    // So build the seed anchor DIRECTLY from the resolved symbol's
+    // [startLine+1, endLine+1] window — the same window `resolveBlockAnchor`'s
+    // symbol branch produces, without re-running `resolveSymbolCandidates`.
+    const { anchorClause, queryParams } = this.blockAnchorForResolvedSymbol(sym);
 
     const seedRows = await exec(
       repo.lbugPath,
@@ -5173,6 +5257,11 @@ export class LocalBackend {
     const seedBlocks: string[] = seedRows
       .map((r: any) => String(r.id ?? r[0] ?? ''))
       .filter((id: string) => id.length > 0);
+    // FIX 7: the seed query is `LIMIT $stepLimit`-bounded like every BFS step.
+    // A function with more seed blocks than `stepLimit` would silently under-seed
+    // (and thus under-report) — flag it so the result carries the same truncation
+    // signal the BFS steps do, never a silent partial seed.
+    const seedTruncated = seedRows.length >= stepLimit;
 
     // ── KTD6 no-body contract: distinguish "no PDG body" from "no dependence" ──
     // A symbol that resolves but produces ZERO anchored blocks has no CFG body
@@ -5202,11 +5291,7 @@ export class LocalBackend {
         // KTD8 parity fields so a consumer iterating byDepth / reading the
         // depth counts on a no-body result still finds a well-formed (empty)
         // shape rather than `undefined` (which would render as "isolated").
-        byDepth: {} as Record<number, unknown[]>,
-        byDepthCounts: { 1: 0 } as Record<number, number>,
-        summary: { direct: 0, processes_affected: 0, modules_affected: 0 },
-        affected_processes: [] as unknown[],
-        affected_modules: [] as unknown[],
+        ...emptyPdgParityFields(),
         unresolvedBlockCount: 0,
         ambiguousProjectionCount: 0,
       };
@@ -5223,9 +5308,11 @@ export class LocalBackend {
     // `truncatedByDepth`: the BFS still had a non-empty frontier when the depth
     // budget ran out (more reachable blocks exist past `maxDepth`).
     // `truncatedByLimit`: a single step's neighbour query hit the interpolated
-    // LIMIT, so that step's expansion is a lower bound. Either flags `truncated`.
+    // LIMIT, so that step's expansion is a lower bound. The SEED query is
+    // LIMIT-bounded too, so `seedTruncated` seeds this flag — a partial seed is
+    // a lower-bound expansion just like a partial step. Either flags `truncated`.
     let truncatedByDepth = false;
-    let truncatedByLimit = false;
+    let truncatedByLimit = seedTruncated;
 
     // The endpoint the frontier is matched on, and the endpoint collected, flip
     // by direction — but the SAME sense applies to BOTH edge types (KTD4).
@@ -5296,11 +5383,7 @@ export class LocalBackend {
         ambiguousProjectionCount: 0,
         ...(truncated ? { truncated: true } : {}),
         ...(truncatedBy ? { truncatedBy } : {}),
-        byDepth: {} as Record<number, unknown[]>,
-        byDepthCounts: { 1: 0 } as Record<number, number>,
-        summary: { direct: 0, processes_affected: 0, modules_affected: 0 },
-        affected_processes: [] as unknown[],
-        affected_modules: [] as unknown[],
+        ...emptyPdgParityFields(),
       };
     }
 

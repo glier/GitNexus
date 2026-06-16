@@ -122,23 +122,36 @@ async function analyzeAndImpact(fx, home, { pdgOn = true } = {}) {
   // The parent process must see the temp GITNEXUS_HOME too — LocalBackend.init()
   // reads the REAL registry under getGlobalDir() (no mock). A fresh backend per
   // fixture avoids cross-fixture pool/registry caching.
-  process.env.GITNEXUS_HOME = home;
-  const { LocalBackend } = await import(
-    path.join(REPO_ROOT, 'src', 'mcp', 'local', 'local-backend.ts')
-  );
-  const backend = new LocalBackend();
-  await backend.init();
+  //
+  // FIX 8: wrap the post-analyze body in try/finally. The analyze-failure path
+  // above already cleans `work`; if `backend.callTool()` (or init/import) THROWS
+  // here, `work` would otherwise leak. On success we return `work` so the caller
+  // can run its own validation + cleanup; on throw we remove it before rethrow.
+  let succeeded = false;
+  try {
+    process.env.GITNEXUS_HOME = home;
+    const { LocalBackend } = await import(
+      path.join(REPO_ROOT, 'src', 'mcp', 'local', 'local-backend.ts')
+    );
+    const backend = new LocalBackend();
+    await backend.init();
 
-  const results = {};
-  for (const mode of MODES) {
-    results[mode] = await backend.callTool('impact', {
-      repo: work,
-      target: fx.gt.criterion.name,
-      direction: fx.gt.criterion.direction,
-      mode,
-    });
+    const results = {};
+    for (const mode of MODES) {
+      results[mode] = await backend.callTool('impact', {
+        repo: work,
+        target: fx.gt.criterion.name,
+        direction: fx.gt.criterion.direction,
+        mode,
+      });
+    }
+    succeeded = true;
+    return { work, results };
+  } finally {
+    // Only clean up on the throwing path — on success the caller owns `work`
+    // (it runs `validateFixture(fx, work, ...)` then removes it in its finally).
+    if (!succeeded) fs.rmSync(work, { recursive: true, force: true });
   }
-  return { work, results };
 }
 
 /** Flatten an impact result's byDepth into canonical symbol keys (the CIS). */
