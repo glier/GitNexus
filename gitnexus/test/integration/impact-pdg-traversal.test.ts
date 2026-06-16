@@ -163,6 +163,89 @@ withTestLbugDB(
       });
     });
 
+    // Helper: the slice statements' lines (sorted) for an `accum` line-seeded call.
+    const sliceLines = (result: any): number[] =>
+      [...((result?.affectedStatements as any[]) ?? [])].map((s) => s.line).sort((a, b) => a - b);
+
+    describe('statement-anchored seed (mode:pdg + line)', () => {
+      it('downstream from line 72 returns exactly the statements dependent on it (NOT the whole symbol)', async () => {
+        const result = await backend.callTool('impact', {
+          target: 'accum',
+          direction: 'downstream',
+          mode: 'pdg',
+          line: 72,
+        });
+        expect(result.error).toBeUndefined();
+        expect(result.mode).toBe('pdg');
+        expect(result.criterionLine).toBe(72);
+        // line 72 (the loop header B) controls C@74, whose sum flows to D@76.
+        expect(sliceLines(result)).toEqual([74, 76]);
+        expect(result.affectedStatementCount).toBe(2);
+        // The dependent statements carry the real source line + text.
+        const byLine = new Map((result.affectedStatements as any[]).map((s) => [s.line, s]));
+        expect(byLine.get(74).text).toBe('sum = sum + x;');
+        expect(byLine.get(74).filePath).toBe(F);
+        expect(byLine.get(76).text).toBe('return sum;');
+        // It is NOT the whole-symbol set — line 71 (the def above the criterion) is
+        // upstream of the criterion, not downstream of it, so it must be absent.
+        expect(sliceLines(result)).not.toContain(71);
+      });
+
+      it('upstream from line 74 returns the statements line 74 depends on (the def + the controller)', async () => {
+        const result = await backend.callTool('impact', {
+          target: 'accum',
+          direction: 'upstream',
+          mode: 'pdg',
+          line: 74,
+        });
+        expect(result.error).toBeUndefined();
+        expect(result.criterionLine).toBe(74);
+        // C@74 depends on A@71 (RD def of sum) and B@72 (CDG controller).
+        expect(sliceLines(result)).toEqual([71, 72]);
+        expect(result.affectedStatementCount).toBe(2);
+        // NOT the whole-symbol set — D@76 is downstream of line 74, never upstream.
+        expect(sliceLines(result)).not.toContain(76);
+      });
+
+      it('whole-symbol (no line) is empty and steers the caller to line:<N>', async () => {
+        // `accum`'s entire dependence stays inside its own [7,13] window, so a
+        // whole-symbol seed reaches nothing (every block is a co-seed) — the
+        // structurally-empty WHOLE-SYMBOL case.
+        const result = await backend.callTool('impact', {
+          target: 'accum',
+          direction: 'downstream',
+          mode: 'pdg',
+        });
+        expect(result.error).toBeUndefined();
+        expect(result.mode).toBe('pdg');
+        // No criterionLine (whole-symbol mode), an empty slice, and the steering note.
+        expect(result.criterionLine).toBeUndefined();
+        expect(result.affectedStatements).toEqual([]);
+        expect(result.affectedStatementCount).toBe(0);
+        expect(result.note).toMatch(/WHOLE-SYMBOL/);
+        expect(result.note).toMatch(/line:<N>|Pass line/i);
+        // Still never a confident "safe" zero.
+        expect(result.risk).not.toBe('LOW');
+      });
+
+      it('a line with no statement block → epistemic pdg-no-block-at-line (distinct from no-pdg-body)', async () => {
+        const result = await backend.callTool('impact', {
+          target: 'accum',
+          direction: 'downstream',
+          mode: 'pdg',
+          line: 73, // blank line inside accum — no block starts here
+        });
+        expect(result.error).toBeUndefined();
+        expect(result.mode).toBe('pdg');
+        expect(result.criterionLine).toBe(73);
+        // Distinct from the no-PDG-body epistemic (the line has no statement block).
+        expect(result.epistemic).toBe('pdg-no-block-at-line');
+        expect(result.epistemic).not.toBe('no-pdg-body');
+        expect(result.affectedStatements).toEqual([]);
+        expect(result.risk).not.toBe('LOW');
+      });
+    });
+
     describe('truncation signalling', () => {
       it('maxDepth=1 truncates the chain and flags truncated (not silently short)', async () => {
         const result = await backend.callTool('impact', {
@@ -326,6 +409,37 @@ withTestLbugDB(
       await edge('CDG', P, S, 'T');
       await edge('CDG', S, K1, 'T');
       await edge('CDG', K1, K2, 'T');
+
+      // ── Statement-anchored fixture `accum` (mode:'pdg' + line) ────────────────
+      // A SELF-CONTAINED multi-statement function whose every dependence stays
+      // inside its own [71,81] window — so a WHOLE-SYMBOL seed reaches nothing
+      // (every block is a co-seed) while a STATEMENT seed (line N) yields exactly
+      // the statements dependent on line N. Lives in a line range that does NOT
+      // overlap the `target`/`up`/`down`/`ctl` blocks above, so its whole-symbol
+      // seed cannot pick up an unrelated block (the window is `[startLine+1,
+      // endLine+1]`). Mirrors the accumulator idiom:
+      //   71:  let sum = 0;            (A — RD def of sum)
+      //   72:  for (const x of xs) {   (B — CDG controller of the loop body)
+      //   73:                          (blank — NO block, the no-block-at-line case)
+      //   74:    sum = sum + x;        (C — accumulate; controlled by B, uses A)
+      //   76:    return sum;           (D — RD use of C's sum def)
+      // Edges (all intra-`accum`):
+      //   CDG: B(72) → C(74)        the loop controls the accumulate body
+      //   RD:  A(71) → C(74)        sum's initial def reaches the accumulate use
+      //   RD:  C(74) → D(76)        the accumulated sum flows to the return
+      // ⇒ downstream from line 72 = {C@74, D@76}; upstream from line 74 = {A@71, B@72}.
+      await fn('func:accum', 'accum', 70, 80); // window [71,81]
+      const AccA = `BasicBlock:${F}:71:0:0`; // line 71
+      const AccB = `BasicBlock:${F}:71:0:1`; // line 72 (same fn, distinct blockIdx)
+      const AccC = `BasicBlock:${F}:71:0:2`; // line 74
+      const AccD = `BasicBlock:${F}:71:0:3`; // line 76
+      await block(AccA, 71, 'let sum = 0;');
+      await block(AccB, 72, 'for (const x of xs) {');
+      await block(AccC, 74, 'sum = sum + x;');
+      await block(AccD, 76, 'return sum;');
+      await edge('CDG', AccB, AccC, 'loop');
+      await edge('REACHING_DEF', AccA, AccC, 'sum');
+      await edge('REACHING_DEF', AccC, AccD, 'sum');
 
       vi.mocked(listRegisteredRepos).mockResolvedValue([
         {

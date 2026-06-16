@@ -134,6 +134,21 @@ describe('GITNEXUS_TOOLS', () => {
     expect(impactTool.inputSchema.required).toContain('direction');
   });
 
+  it('impact tool advertises the PDG-only `line` statement anchor (integer, min 1, not required)', () => {
+    const impactTool = GITNEXUS_TOOLS.find((t) => t.name === 'impact')!;
+    const line = (impactTool.inputSchema.properties as Record<string, any>).line;
+    expect(line).toBeDefined();
+    expect(line.type).toBe('integer');
+    expect(line.minimum).toBe(1);
+    // Statement-anchored slice is optional — never required.
+    expect(impactTool.inputSchema.required).not.toContain('line');
+    // The description names the mode:'pdg' statement-anchor semantics.
+    expect(line.description).toMatch(/statement anchor/i);
+    expect(line.description).toMatch(/pdg/i);
+    // The top-level description mentions the statement-anchored slice.
+    expect(impactTool.description).toMatch(/statement-anchored|STATEMENT-ANCHORED/);
+  });
+
   it('rename tool requires new_name', () => {
     const renameTool = GITNEXUS_TOOLS.find((t) => t.name === 'rename')!;
     expect(renameTool.inputSchema.required).toContain('new_name');

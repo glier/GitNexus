@@ -1496,6 +1496,60 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     },
   );
 
+  it.each([['callgraph'], [undefined]])(
+    'line param with mode:%j → structured {error} (line is PDG-only), never a callgraph result',
+    async (mode) => {
+      resolveSingleTarget();
+      const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+      const result = await backend.callTool('impact', {
+        target: 'main',
+        direction: 'upstream',
+        mode: mode as any,
+        line: 8,
+      });
+      expect(result.error).toMatch(/'line' is only supported with mode:'pdg'/);
+      expect(result.risk).toBe('UNKNOWN');
+      // A PDG-only param on the callgraph path must NOT silently run the BFS.
+      expect(bfsSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([[0], [-1], [1.5]])(
+    "mode:'pdg' + non-positive-integer line %j → structured {error}, never routed to traversal",
+    async (badLine) => {
+      resolveSingleTarget();
+      const pdgSpy = vi.spyOn(backend as any, '_runImpactPDG');
+      const result = await backend.callTool('impact', {
+        target: 'main',
+        direction: 'upstream',
+        mode: 'pdg',
+        line: badLine as any,
+      });
+      expect(result.error).toMatch(/'line' must be a positive integer/);
+      expect(result.risk).toBe('UNKNOWN');
+      // The validation fires BEFORE the traversal — a bad line never seeds a slice.
+      expect(pdgSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it("mode:'pdg' + line:8 routes to the PDG traversal (no validation error, never the BFS)", async () => {
+    resolveSingleTarget();
+    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const pdgSpy = vi.spyOn(backend as any, '_runImpactPDG');
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'upstream',
+      mode: 'pdg',
+      line: 8,
+    });
+    // A valid line routes cleanly into the PDG engine — no line/mode error.
+    expect(result.error).toBeUndefined();
+    expect(result.mode).toBe('pdg');
+    expect(pdgSpy).toHaveBeenCalledTimes(1);
+    // KTD5: the callgraph engine never runs under a pdg + line call.
+    expect(bfsSpy).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['relationTypes', { relationTypes: ['CALLS'] }],
     ['crossDepth', { crossDepth: 2 }],

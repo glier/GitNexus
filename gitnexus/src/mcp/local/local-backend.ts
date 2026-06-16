@@ -129,6 +129,50 @@ function fnFileOf(id: string): string {
   return parts.slice(1, parts.length - 3).join(':');
 }
 
+/** A reachable dependence block resolved to its source statement. */
+export interface PdgStatement {
+  /** 1-based source line where the statement's block starts. */
+  line: number;
+  /** Repo-relative file path (parsed from the block id). */
+  filePath: string;
+  /** The statement's source text (BasicBlock.text), trimmed. */
+  text: string;
+}
+
+/**
+ * Resolve a set of reachable BasicBlock ids to their source statements
+ * (line + text), deduped by `(filePath, line)` and sorted by line. This is the
+ * useful output of a statement-anchored PDG slice — the dependent statements the
+ * change reaches. A query error propagates (no `.catch` swallow) so a DB failure
+ * is never silently reported as "no affected statements".
+ */
+async function pdgStatementsForBlocks(
+  lbugPath: string,
+  blockIds: string[],
+  exec: typeof executeParameterized,
+): Promise<PdgStatement[]> {
+  if (blockIds.length === 0) return [];
+  const rows = await exec(
+    lbugPath,
+    `MATCH (b:BasicBlock) WHERE b.id IN $ids
+     RETURN b.id AS id, b.startLine AS line, b.text AS text`,
+    { ids: blockIds },
+  );
+  const byKey = new Map<string, PdgStatement>();
+  for (const r of rows as any[]) {
+    const id = String(r.id ?? r[0] ?? '');
+    const line = Number(r.line ?? r[1] ?? 0);
+    if (!id || !Number.isFinite(line) || line <= 0) continue;
+    const filePath = fnFileOf(id);
+    const text = String(r.text ?? r[2] ?? '').trim();
+    const key = `${filePath}:${line}`;
+    if (!byKey.has(key)) byKey.set(key, { line, filePath, text });
+  }
+  return [...byKey.values()].sort((a, b) =>
+    a.filePath === b.filePath ? a.line - b.line : a.filePath < b.filePath ? -1 : 1,
+  );
+}
+
 // ── Block → owning-symbol projection types (U4) ──────────────────────────────
 
 /**
@@ -357,6 +401,10 @@ function assemblePdgImpactResult(input: {
   target: { id: string; name: string; type: string; filePath: string };
   direction: 'upstream' | 'downstream';
   reachableBlocks: string[];
+  /** Reachable blocks resolved to source statements (the useful slice output). */
+  affectedStatements?: PdgStatement[];
+  /** The 1-based source line the slice was seeded on (statement mode only). */
+  criterionLine?: number;
   projection: { symbols: OwningSymbol[]; unresolvedCount: number; ambiguousCount: number };
   depthReached: number;
   truncated: boolean;
@@ -364,6 +412,8 @@ function assemblePdgImpactResult(input: {
 }): Record<string, unknown> {
   const { target, direction, reachableBlocks, projection } = input;
   const { symbols, unresolvedCount, ambiguousCount } = projection;
+  const affectedStatements = input.affectedStatements ?? [];
+  const statementMode = typeof input.criterionLine === 'number';
 
   // Items for the single collapsed bucket. Shaped like the call-graph byDepth
   // items (`{ depth, id, name, type, filePath, processes }`) so consumers that
@@ -390,13 +440,21 @@ function assemblePdgImpactResult(input: {
   const byDepth: Record<number, unknown[]> = items.length > 0 ? { 1: items } : {};
   const byDepthCounts: Record<number, number> = { 1: items.length };
 
-  const noteParts: string[] = [
-    `mode:'pdg' — intra-procedural Program Dependence Graph. ${impactedCount} owning ` +
-      `${impactedCount === 1 ? 'symbol' : 'symbols'} reached via ${reachableBlocks.length} ` +
-      `dependence ${reachableBlocks.length === 1 ? 'block' : 'blocks'} ` +
-      `(${direction} over CDG + REACHING_DEF). Cross-function (inter-procedural) impact is ` +
-      `NOT modeled in this mode — use mode:'callgraph' for the call-graph blast radius.`,
-  ];
+  const noteParts: string[] = statementMode
+    ? [
+        `mode:'pdg' — intra-procedural slice from line ${input.criterionLine} of ` +
+          `'${target.name}'. ${affectedStatements.length} ` +
+          `${affectedStatements.length === 1 ? 'statement is' : 'statements are'} ${direction}-` +
+          `dependent on it (over CDG + REACHING_DEF). Cross-function (inter-procedural) impact ` +
+          `is NOT modeled in this mode — use mode:'callgraph' for the call-graph blast radius.`,
+      ]
+    : [
+        `mode:'pdg' — intra-procedural Program Dependence Graph. ${impactedCount} owning ` +
+          `${impactedCount === 1 ? 'symbol' : 'symbols'} reached via ${reachableBlocks.length} ` +
+          `dependence ${reachableBlocks.length === 1 ? 'block' : 'blocks'} ` +
+          `(${direction} over CDG + REACHING_DEF). Cross-function (inter-procedural) impact is ` +
+          `NOT modeled in this mode — use mode:'callgraph' for the call-graph blast radius.`,
+      ];
   if (ambiguousCount > 0) {
     noteParts.push(
       `${ambiguousCount} owning-symbol ${ambiguousCount === 1 ? 'projection is' : 'projections are'} ` +
@@ -425,6 +483,12 @@ function assemblePdgImpactResult(input: {
     // PDG-specific epistemic marker — NOT the callgraph 'lower-bound'/DI copy.
     epistemic: 'pdg-intra-procedural',
     note: noteParts.join(' '),
+    // Statement-level slice: the dependent source statements (line + text) the
+    // change reaches. This is the primary useful output of statement mode; the
+    // accuracy harness scores against these lines.
+    ...(statementMode ? { criterionLine: input.criterionLine } : {}),
+    affectedStatements,
+    affectedStatementCount: affectedStatements.length,
     // Raw block-level detail retained alongside the symbol projection (U3 tests
     // and the accuracy harness read these).
     reachableBlocks,
@@ -980,6 +1044,15 @@ interface ImpactParams {
    * Validated in `_impactImpl`; any other value is a hard `{ error }`.
    */
   mode?: ImpactMode;
+  /**
+   * Statement anchor for `mode:'pdg'` (1-based source line). When provided, the
+   * PDG traversal seeds the dependence slice on the BasicBlock(s) at THIS line
+   * within the target symbol — answering "what statements depend on the code at
+   * line N?" — instead of the whole-symbol seed (which is empty for a function,
+   * since its intra-procedural reach stays inside its own blocks). Only
+   * meaningful with `mode:'pdg'`; rejected for `mode:'callgraph'`.
+   */
+  line?: number;
   maxDepth?: number;
   crossDepth?: number;
   relationTypes?: string[];
@@ -3506,6 +3579,40 @@ export class LocalBackend {
   }
 
   /**
+   * Build a STATEMENT seed anchor: the BasicBlock(s) starting at a specific
+   * 1-based source `line` WITHIN the resolved symbol. This is what makes
+   * `mode:'pdg'` useful — seeding the dependence slice on a single statement
+   * (the thing being changed) rather than the whole symbol. A whole-symbol seed
+   * captures every intra-procedural block, so the reachable-minus-seed set is
+   * empty (all intra reach is within the seed); a statement seed leaves the
+   * other dependent statements reachable. `BasicBlock.startLine` is 1-based and
+   * matches the source line, so no `+1` offset applies here (unlike the symbol
+   * span, where the 0-based symbol bounds are shifted). Bounded to the symbol's
+   * own span when known, so a line shared with a sibling symbol can't leak.
+   */
+  private blockAnchorForStatement(
+    sym: { filePath: string; startLine?: number; endLine?: number },
+    line: number,
+  ): { anchorClause: string; queryParams: Record<string, unknown> } {
+    const idPrefix = `BasicBlock:${sym.filePath}:`;
+    if (
+      typeof sym.startLine === 'number' &&
+      typeof sym.endLine === 'number' &&
+      sym.endLine >= sym.startLine
+    ) {
+      return {
+        anchorClause:
+          'a.id STARTS WITH $idPrefix AND a.startLine = $line AND a.startLine >= $symStart AND a.startLine <= $symEnd',
+        queryParams: { idPrefix, line, symStart: sym.startLine + 1, symEnd: sym.endLine + 1 },
+      };
+    }
+    return {
+      anchorClause: 'a.id STARTS WITH $idPrefix AND a.startLine = $line',
+      queryParams: { idPrefix, line },
+    };
+  }
+
+  /**
    * Explain tool (#2083 M3 U6) — persisted taint-finding explanation.
    * WAL-aware wrapper mirroring `context`.
    */
@@ -4843,6 +4950,31 @@ export class LocalBackend {
     }
     const mode = modeResult.mode;
 
+    // `line` is a PDG-only statement anchor. Reject it on the callgraph path
+    // rather than silently ignore (the symbol→symbol BFS has no statement notion).
+    if (params.line !== undefined && mode !== 'pdg') {
+      return {
+        error: `Parameter 'line' is only supported with mode:'pdg' (it anchors the dependence slice on a statement). Remove it or set mode:'pdg'.`,
+        target: { name: params.target },
+        direction: params.direction,
+        impactedCount: 0,
+        risk: 'UNKNOWN',
+      };
+    }
+    // A provided `line` must be a positive integer.
+    if (
+      params.line !== undefined &&
+      (!Number.isInteger(params.line) || (params.line as number) < 1)
+    ) {
+      return {
+        error: `Parameter 'line' must be a positive integer (1-based source line), got ${JSON.stringify(params.line)}.`,
+        target: { name: params.target },
+        direction: params.direction,
+        impactedCount: 0,
+        risk: 'UNKNOWN',
+      };
+    }
+
     if (mode === 'pdg') {
       // KTD12 — param-compatibility hard rejections (decided as errors, NOT
       // silent ignores and NOT an `ignoredParams` echo). Each names a symbol-
@@ -5143,6 +5275,7 @@ export class LocalBackend {
         symType,
         direction,
         maxDepth,
+        line: params.line,
         limit: Number.isFinite(params.limit) ? params.limit : 100,
         // KTD2 extraction-seam discipline: hand the engine its DB dependency
         // explicitly rather than `this.`-binding it, so the traversal (U3/U4)
@@ -5212,9 +5345,15 @@ export class LocalBackend {
     direction: 'upstream' | 'downstream';
     maxDepth: number;
     limit: number;
+    /** Statement anchor (1-based source line) — see ImpactParams.line. */
+    line?: number;
     executeParameterized: typeof executeParameterized;
   }): Promise<any> {
-    const { repo, sym, direction, maxDepth, executeParameterized: exec } = deps;
+    const { repo, sym, direction, maxDepth, line, executeParameterized: exec } = deps;
+    // `line` present ⇒ statement-anchored slice (the useful mode); absent ⇒
+    // whole-symbol seed (intra-procedural reach collapses to empty for a
+    // function — kept for back-compat, with a note steering the caller to `line`).
+    const statementMode = typeof line === 'number' && Number.isInteger(line) && line >= 1;
     // `target` carries the call-graph-compatible shape (id/name/type/filePath) so
     // `collectImpactSymbolUids` keys on it identically to a callgraph result.
     const target = {
@@ -5247,7 +5386,9 @@ export class LocalBackend {
     // So build the seed anchor DIRECTLY from the resolved symbol's
     // [startLine+1, endLine+1] window — the same window `resolveBlockAnchor`'s
     // symbol branch produces, without re-running `resolveSymbolCandidates`.
-    const { anchorClause, queryParams } = this.blockAnchorForResolvedSymbol(sym);
+    const { anchorClause, queryParams } = statementMode
+      ? this.blockAnchorForStatement(sym, line as number)
+      : this.blockAnchorForResolvedSymbol(sym);
 
     const seedRows = await exec(
       repo.lbugPath,
@@ -5274,18 +5415,27 @@ export class LocalBackend {
         mode: 'pdg',
         target,
         direction,
+        ...(statementMode ? { criterionLine: line } : {}),
         reachableBlocks: [],
         blockCount: 0,
+        affectedStatements: [],
+        affectedStatementCount: 0,
         truncated: false,
         depthReached: 0,
-        // "No PDG body" — structurally no CFG/blocks for this symbol kind.
-        epistemic: 'no-pdg-body',
-        note:
-          `'${sym.name}' has no PDG body — no BasicBlocks / control- or data-dependence ` +
-          `edges exist for this symbol (e.g. an interface, type alias, abstract/ambient ` +
-          `member, or a one-line declaration with no CFG). This is NOT a confident ` +
-          `"no impact": the intra-procedural PDG mode cannot model this symbol kind. ` +
-          `Use mode:'callgraph' for its inter-procedural blast radius.`,
+        // statementMode: the requested line has no statement block inside the
+        // symbol (blank line, comment, outside the body, or a line the CFG did
+        // not materialise). Distinct from "no PDG body".
+        epistemic: statementMode ? 'pdg-no-block-at-line' : 'no-pdg-body',
+        note: statementMode
+          ? `No PDG statement block starts at line ${line} within '${sym.name}' ` +
+            `(${sym.filePath}). The line may be blank, a comment, a brace, or outside ` +
+            `the symbol's body. Pass a line that begins an executable statement.`
+          : `'${sym.name}' has no PDG body — no BasicBlocks / control- or data-dependence ` +
+            `edges exist for this symbol (e.g. an interface, type alias, abstract/ambient ` +
+            `member, or a one-line declaration with no CFG). This is NOT a confident ` +
+            `"no impact": the intra-procedural PDG mode cannot model this symbol kind. ` +
+            `Pass line:<N> to slice from a statement, or use mode:'callgraph' for the ` +
+            `inter-procedural blast radius.`,
         impactedCount: 0,
         risk: 'UNKNOWN',
         // KTD8 parity fields so a consumer iterating byDepth / reading the
@@ -5360,24 +5510,41 @@ export class LocalBackend {
         ? 'limit'
         : undefined;
 
+    // ── Resolve the reachable blocks to source statements (line + text) ────────
+    // This is the useful output of statement mode: the dependent statements the
+    // change at `line` reaches. Fetched once for the whole reachable set; sorted
+    // by line. Failure surfaces (no `.catch` swallow) rather than masquerading
+    // as "no affected statements".
+    const affectedStatements = await pdgStatementsForBlocks(repo.lbugPath, reachableBlocks, exec);
+
     // ── Has a PDG body but no intra-procedural dependence reachability ─────────
     // Distinct from "no PDG body": the function exists and has blocks, but no
-    // CDG/REACHING_DEF edge leaves the target's blocks in this direction. Still
-    // not a confident zero — surface the explicit note + UNKNOWN (KTD6/KTD8).
+    // CDG/REACHING_DEF edge leaves the target's blocks in this direction. For a
+    // WHOLE-SYMBOL seed this is the expected (and uninformative) result — every
+    // intra-procedural block is already a seed — so the note steers to `line`.
+    // Still not a confident zero — explicit note + UNKNOWN (KTD6/KTD8).
     if (reachableBlocks.length === 0) {
       return {
         mode: 'pdg',
         target,
         direction,
+        ...(statementMode ? { criterionLine: line } : {}),
         impactedCount: 0,
         risk: 'UNKNOWN',
         epistemic: 'pdg-intra-procedural',
-        note:
-          `'${sym.name}' has a PDG body but no intra-procedural ${direction} dependence edges ` +
-          `(no CDG/REACHING_DEF reachability from its blocks). This is distinct from "no PDG body". ` +
-          `Use mode:'callgraph' for its inter-procedural blast radius.`,
+        note: statementMode
+          ? `No statement in '${sym.name}' is ${direction}-dependent on line ${line} ` +
+            `(no CDG/REACHING_DEF reachability from that statement). The line may have no ` +
+            `dependents in this direction.`
+          : `'${sym.name}' has a PDG body but a WHOLE-SYMBOL ${direction} slice is empty: ` +
+            `intra-procedural dependence stays inside the function, so every reachable block ` +
+            `is already part of the seed. Pass line:<N> to slice from a specific statement ` +
+            `(what depends on the code at that line), or use mode:'callgraph' for the ` +
+            `inter-procedural blast radius.`,
         reachableBlocks: [] as string[],
         blockCount: 0,
+        affectedStatements: [],
+        affectedStatementCount: 0,
         depthReached,
         unresolvedBlockCount: 0,
         ambiguousProjectionCount: 0,
@@ -5403,6 +5570,8 @@ export class LocalBackend {
       },
       direction,
       reachableBlocks,
+      affectedStatements,
+      criterionLine: statementMode ? (line as number) : undefined,
       projection,
       depthReached,
       truncated,

@@ -264,6 +264,61 @@ export function formatImpactResult(result: any): string {
       );
     }
 
+    // (2b) STATEMENT-ANCHORED SLICE (mode:'pdg' + line). When `criterionLine` is
+    // present the result is a statement slice: the seeded line plus the list of
+    // dependent statements (`affectedStatements: {line,filePath,text}[]`). Render
+    // those statements directly — this IS the useful output of statement mode —
+    // rather than the symbol-projection bucket below. Empty cases:
+    //   - `pdg-no-block-at-line`: the line is blank / a comment / outside the
+    //     body (no statement block) — print the steering note.
+    //   - empty `affectedStatements` with `pdg-intra-procedural`: the line has no
+    //     dependents in this direction — print the steering note.
+    // Each non-empty case also surfaces truncation honestly.
+    if (typeof result.criterionLine === 'number') {
+      const slice: any[] = Array.isArray(result.affectedStatements)
+        ? result.affectedStatements
+        : [];
+      const count =
+        typeof result.affectedStatementCount === 'number'
+          ? result.affectedStatementCount
+          : slice.length;
+      // File anchor for the heading — the seeded statement's file (every slice
+      // statement shares the function's file). Fall back to the target's file.
+      const anchorFile = slice[0]?.filePath || target?.filePath || name;
+
+      if (count === 0 || slice.length === 0) {
+        // No statement block at the line, or no dependents in this direction.
+        // Print the honest note (pdg-no-block-at-line or the no-dependence note)
+        // verbatim — never an empty "isolated" headline.
+        return (
+          `No statements ${direction}-dependent on ${anchorFile}:${result.criterionLine}.` +
+          (result.note ? `\n${result.note}` : '')
+        );
+      }
+
+      const slLines: string[] = [];
+      slLines.push(
+        `Statements ${direction}-dependent on ${anchorFile}:${result.criterionLine} (${count}):`,
+      );
+      for (const s of slice) {
+        const text = typeof s.text === 'string' ? s.text : '';
+        slLines.push(`  L${s.line}: ${text}`);
+      }
+      // Truncation honesty — the slice may be a lower bound (depth or per-step
+      // LIMIT bound). Surface it the same way the symbol render does.
+      if (result.truncated) {
+        const by = result.truncatedBy ? ` (by ${result.truncatedBy})` : '';
+        slLines.push(
+          `⚠️  Truncated${by} — the dependence slice was bounded; deeper PDG-dependent statements may exist.`,
+        );
+      }
+      if (result.note) {
+        slLines.push('');
+        slLines.push(`ℹ️  ${result.note}`);
+      }
+      return slLines.join('\n').trim();
+    }
+
     const items: any[] = (result.byDepth && result.byDepth[1]) || [];
     const bucketCount = result.byDepthCounts?.[1] ?? items.length;
     const pdgLines: string[] = [];

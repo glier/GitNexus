@@ -194,6 +194,58 @@ withTestLbugDB(
       });
     });
 
+    // ── Statement-mode result shape (criterionLine + slice + KTD8 parity) ─────
+    describe('statement-mode result carries the slice fields AND the KTD8 parity fields', () => {
+      it('a line-seeded result has criterionLine/affectedStatements/affectedStatementCount', async () => {
+        const result = await backend.callTool('impact', {
+          target: 'accum',
+          direction: 'downstream',
+          mode: 'pdg',
+          line: 72,
+        });
+        expect(result.error).toBeUndefined();
+        expect(result.mode).toBe('pdg');
+        // Statement-mode-specific fields.
+        expect(result.criterionLine).toBe(72);
+        expect(Array.isArray(result.affectedStatements)).toBe(true);
+        expect(result.affectedStatementCount).toBe(result.affectedStatements.length);
+        expect(result.affectedStatementCount).toBe(2);
+        for (const s of result.affectedStatements) {
+          expect(s).toHaveProperty('line');
+          expect(s).toHaveProperty('filePath');
+          expect(s).toHaveProperty('text');
+        }
+        // The slice statements are the downstream-dependent ones (lines 10, 12).
+        const lines = (result.affectedStatements as any[]).map((s) => s.line).sort((a, b) => a - b);
+        expect(lines).toEqual([74, 76]);
+      });
+
+      it('the statement-mode result ALSO carries the KTD8 parity fields (byDepth/target/risk/empty processes-modules)', async () => {
+        const result = await backend.callTool('impact', {
+          target: 'accum',
+          direction: 'downstream',
+          mode: 'pdg',
+          line: 72,
+        });
+        // byDepth is the single collapsed bucket (block-hops ≠ call-hops).
+        expect(Object.keys(result.byDepth)).toEqual(['1']);
+        expect(result.byDepthCounts['1']).toBe(result.byDepth['1'].length);
+        // target carries the call-graph-compatible shape.
+        expect(result.target.id).toBe('func:accum');
+        expect(result.target.name).toBe('accum');
+        expect(result.target.filePath).toBe(F);
+        expect(typeof result.target.type).toBe('string');
+        // risk is the UNKNOWN sentinel (never a confident LOW).
+        expect(result.risk).toBe('UNKNOWN');
+        expect(result.risk).not.toBe('LOW');
+        // Empty processes/modules — consumers coalesce [].
+        expect(result.affected_processes).toEqual([]);
+        expect(result.affected_modules).toEqual([]);
+        expect(result.summary.processes_affected).toBe(0);
+        expect(result.summary.modules_affected).toBe(0);
+      });
+    });
+
     // ── Consumer safety: group cross-impact treats the PDG result correctly ───
     describe('group consumer safety (cross-impact.ts)', () => {
       it('collectImpactSymbolUids collects the PDG owning-symbol UIDs (non-zero)', async () => {
@@ -422,6 +474,27 @@ withTestLbugDB(
       await edge('CDG', K1, K2, 'T');
       await edge('CDG', K2, T, 'T');
       await edge('CDG', T, U, 'T');
+
+      // ── Statement-anchored fixture `accum` (mode:'pdg' + line) ────────────────
+      // Self-contained multi-statement fn at 0-based [70,80] (window [71,81]); a
+      // line range that does NOT overlap S@11 / D@21,22 / K@31,32 above, so its
+      // whole-symbol seed cannot pick up an unrelated block. Every dependence
+      // stays inside it, so a STATEMENT seed slices the dependent statements.
+      //   71:  let sum = 0;         (A)  72: for (…) {     (B, criterion)
+      //   74:  sum = sum + x;       (C)  76: return sum;   (D)
+      // CDG B→C; RD A→C, C→D ⇒ downstream from line 72 = {C@74, D@76}.
+      await fn('func:accum', 'accum', 70, 80);
+      const AccA = `BasicBlock:${F}:71:0:0`; // line 71
+      const AccB = `BasicBlock:${F}:71:0:1`; // line 72
+      const AccC = `BasicBlock:${F}:71:0:2`; // line 74
+      const AccD = `BasicBlock:${F}:71:0:3`; // line 76
+      await block(AccA, 71, 'let sum = 0;');
+      await block(AccB, 72, 'for (const x of xs) {');
+      await block(AccC, 74, 'sum = sum + x;');
+      await block(AccD, 76, 'return sum;');
+      await edge('CDG', AccB, AccC, 'loop');
+      await edge('REACHING_DEF', AccA, AccC, 'sum');
+      await edge('REACHING_DEF', AccC, AccD, 'sum');
 
       // ── Windows drive-colon path fixture (exercises fnFileOf split-from-right) ─
       // Separate file `C:/src/win.ts`, isolated from `target`'s graph so the

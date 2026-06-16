@@ -214,8 +214,10 @@ describe('formatImpactResult — PDG (mode:pdg) rendering', () => {
     expect(out).not.toContain('No downstream dependencies found');
   });
 
-  it('renders has-body-but-no-dependence as not-isolated, with the cross-function caveat', () => {
-    // `_runImpactPDG` reachableBlocks.length === 0 path (body exists, no edges).
+  it('renders whole-symbol-empty as not-isolated, steering the caller to line:<N>', () => {
+    // `_runImpactPDG` reachableBlocks.length === 0 path WITHOUT a line (whole-
+    // symbol seed). The note now frames it as a structurally-empty WHOLE-SYMBOL
+    // slice and steers to `line:<N>` (the useful statement-anchored mode).
     const out = formatImpactResult({
       mode: 'pdg',
       target: {
@@ -229,11 +231,15 @@ describe('formatImpactResult — PDG (mode:pdg) rendering', () => {
       risk: 'UNKNOWN',
       epistemic: 'pdg-intra-procedural',
       note:
-        "'noop' has a PDG body but no intra-procedural downstream dependence edges " +
-        '(no CDG/REACHING_DEF reachability from its blocks). This is distinct from "no PDG body". ' +
-        "Use mode:'callgraph' for its inter-procedural blast radius.",
+        "'noop' has a PDG body but a WHOLE-SYMBOL downstream slice is empty: " +
+        'intra-procedural dependence stays inside the function, so every reachable block ' +
+        'is already part of the seed. Pass line:<N> to slice from a specific statement ' +
+        "(what depends on the code at that line), or use mode:'callgraph' for the " +
+        'inter-procedural blast radius.',
       reachableBlocks: [],
       blockCount: 0,
+      affectedStatements: [],
+      affectedStatementCount: 0,
       depthReached: 1,
       unresolvedBlockCount: 0,
       ambiguousProjectionCount: 0,
@@ -244,11 +250,113 @@ describe('formatImpactResult — PDG (mode:pdg) rendering', () => {
       affected_modules: [],
     });
     expect(out).toContain('no intra-procedural PDG-dependent symbols');
+    // The new note steers to the statement-anchored mode.
+    expect(out).toContain('WHOLE-SYMBOL');
+    expect(out).toMatch(/line:<N>/);
     // The caveat may reference the word "isolated" to disclaim it, but the
     // confident callgraph "appears isolated." headline must be absent.
     expect(out).not.toContain('appears isolated');
     expect(out).not.toContain('No downstream dependencies found');
     expect(out.toLowerCase()).toContain('cross-function');
+  });
+
+  // ── Statement-anchored (mode:'pdg' + line) rendering ──────────────────────
+  // A representative statement-mode result, shaped like `assemblePdgImpactResult`
+  // emits when seeded on a line: criterionLine + affectedStatements + count.
+  function pdgStatementSlice(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      mode: 'pdg',
+      target: {
+        id: 'Function:src/svc.ts:accum',
+        name: 'accum',
+        type: 'Function',
+        filePath: 'src/svc.ts',
+      },
+      direction: 'downstream',
+      criterionLine: 8,
+      affectedStatements: [
+        { line: 10, filePath: 'src/svc.ts', text: 'sum = sum + x;' },
+        { line: 12, filePath: 'src/svc.ts', text: 'return sum;' },
+      ],
+      affectedStatementCount: 2,
+      impactedCount: 1,
+      risk: 'UNKNOWN',
+      epistemic: 'pdg-intra-procedural',
+      note:
+        "mode:'pdg' — intra-procedural slice from line 8 of 'accum'. 2 statements are " +
+        'downstream-dependent on it (over CDG + REACHING_DEF). Cross-function (inter-procedural) ' +
+        "impact is NOT modeled in this mode — use mode:'callgraph' for the call-graph blast radius.",
+      reachableBlocks: ['b1', 'b2'],
+      blockCount: 2,
+      depthReached: 2,
+      unresolvedBlockCount: 0,
+      ambiguousProjectionCount: 0,
+      summary: { direct: 1, processes_affected: 0, modules_affected: 0 },
+      byDepthCounts: { 1: 1 },
+      affected_processes: [],
+      affected_modules: [],
+      byDepth: { 1: [] },
+      ...overrides,
+    };
+  }
+
+  it('renders a statement slice as an L<line>: <text> list under the criterion-line heading', () => {
+    const out = formatImpactResult(pdgStatementSlice());
+    // Heading carries direction + file:criterionLine + count.
+    expect(out).toContain('Statements downstream-dependent on src/svc.ts:8 (2):');
+    // Each dependent statement renders as `  L<line>: <text>`.
+    expect(out).toContain('  L10: sum = sum + x;');
+    expect(out).toContain('  L12: return sum;');
+    // It is the statement list — NOT the symbol-projection "PDG-dependent symbols"
+    // heading (that is the whole-symbol render path).
+    expect(out).not.toContain('PDG-dependent symbols');
+    // The intra-procedural caveat note still surfaces.
+    expect(out.toLowerCase()).toContain('cross-function');
+  });
+
+  it('flags slice truncation honestly', () => {
+    const out = formatImpactResult(pdgStatementSlice({ truncated: true, truncatedBy: 'depth' }));
+    expect(out).toContain('Truncated');
+    expect(out).toContain('by depth');
+  });
+
+  it('renders a no-block-at-line result as the steering note, never an empty isolated headline', () => {
+    // `_runImpactPDG` seedBlocks.length === 0 in statement mode.
+    const out = formatImpactResult({
+      mode: 'pdg',
+      target: {
+        id: 'Function:src/svc.ts:accum',
+        name: 'accum',
+        type: 'Function',
+        filePath: 'src/svc.ts',
+      },
+      direction: 'downstream',
+      criterionLine: 9,
+      reachableBlocks: [],
+      blockCount: 0,
+      affectedStatements: [],
+      affectedStatementCount: 0,
+      truncated: false,
+      depthReached: 0,
+      epistemic: 'pdg-no-block-at-line',
+      note:
+        "No PDG statement block starts at line 9 within 'accum' (src/svc.ts). The line may be " +
+        "blank, a comment, a brace, or outside the symbol's body. Pass a line that begins an " +
+        'executable statement.',
+      impactedCount: 0,
+      risk: 'UNKNOWN',
+      byDepth: {},
+      byDepthCounts: { 1: 0 },
+      summary: { direct: 0, processes_affected: 0, modules_affected: 0 },
+      affected_processes: [],
+      affected_modules: [],
+      unresolvedBlockCount: 0,
+      ambiguousProjectionCount: 0,
+    });
+    expect(out).toContain('No statements downstream-dependent on src/svc.ts:9');
+    expect(out).toContain('No PDG statement block starts at line 9');
+    expect(out).not.toContain('appears isolated');
+    expect(out).not.toContain('PDG-dependent symbols');
   });
 });
 

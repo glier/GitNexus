@@ -343,6 +343,10 @@ program
     'Engine: callgraph (default) or pdg (opt-in, intra-procedural; needs analyze --pdg)',
     'callgraph',
   )
+  .option(
+    '--line <number>',
+    '1-based source line — PDG-only statement anchor (--mode pdg): slice the dependence from the statement at this line and show what depends on it',
+  )
   .option('-r, --repo <name>', 'Target repository')
   .option('--branch <name>', 'Scope to a specific branch index (multi-branch repos)')
   .option('-u, --uid <uid>', 'Direct symbol UID (zero-ambiguity lookup)')

@@ -411,6 +411,8 @@ Returns affected symbols grouped by depth, plus risk assessment, affected execut
 
 MODE (opt-in): "callgraph" (default) walks symbol→symbol edges (CALLS/IMPORTS/EXTENDS/IMPLEMENTS) — inter-procedural, the established behavior. "pdg" computes the blast radius from the persisted Program Dependence Graph (control + data dependence) — finer-grained WITHIN a function but intra-procedural, and requires an index built with \`gitnexus analyze --pdg\`. The two modes answer the same question with different engines; pdg is incompatible with relationTypes/crossDepth/minConfidence and with @group targets (each rejected).
 
+STATEMENT-ANCHORED PDG SLICE: with mode:'pdg', pass "line" (1-based source line within the target symbol) to seed the dependence slice on the statement at that line and return what depends on it — the dependent statements (line + text), not the whole-symbol set. Without "line", a whole-symbol pdg slice is structurally empty (intra-procedural reach stays inside the function), so "line" is what makes pdg mode useful.
+
 WHEN TO USE: Before making code changes — especially refactoring, renaming, or modifying shared code. Shows what would break.
 AFTER THIS: Review d=1 items (WILL BREAK). Use context() on high-risk symbols.
 
@@ -458,6 +460,12 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
           default: 'callgraph',
           description:
             "Blast-radius engine. 'callgraph' (default) = inter-procedural symbol→symbol traversal (current behavior). 'pdg' = opt-in, intra-procedural Program Dependence Graph traversal (control + data dependence); requires an index built with `gitnexus analyze --pdg`. The pdg mode is incompatible with relationTypes/crossDepth/minConfidence and with @group targets — each is rejected, not silently ignored.",
+        },
+        line: {
+          type: 'integer',
+          minimum: 1,
+          description:
+            "1-based source line — PDG-only statement anchor (mode:'pdg'). Seeds the dependence slice on the statement at this line and returns what depends on it. Without it, a whole-symbol pdg slice is empty (intra-procedural reach stays inside the function).",
         },
         file_path: {
           type: 'string',
