@@ -42,6 +42,15 @@ interface Criterion {
   name: string;
   filePath: string;
   direction: string;
+  /**
+   * The 1-based source line of the statement being changed — the seed of the
+   * statement-anchored PDG slice (`impact({mode:'pdg', line})`, U7 rework). Set
+   * from SOURCE SEMANTICS (the def/criterion whose change propagates to the
+   * intra_AIS lines), validated against the live traversal in the harness's
+   * Step 0. Required for every measurable case; omitted on excluded no-body
+   * cases (which carry no statement to seed).
+   */
+  line?: number;
   marker?: string;
   /**
    * The PDG edge kinds the criterion function is EXPECTED to produce. A pure
@@ -216,6 +225,15 @@ describe('U6 — impact-PDG fixture ground-truth schema', () => {
           expect(src.includes(c.marker!), `marker ${JSON.stringify(c.marker)} in source`).toBe(
             true,
           );
+          // Measurable cases carry a 1-based statement anchor (criterion.line) —
+          // the seed of the PDG slice (U7 rework). It must be a positive integer
+          // pointing at an actual source line of the criterion file.
+          expect(typeof c.line, `${fx.name} needs a 1-based criterion.line`).toBe('number');
+          expect(Number.isInteger(c.line!) && c.line! >= 1, `${fx.name} criterion.line >= 1`).toBe(
+            true,
+          );
+          const lineCount = src.split('\n').length;
+          expect(c.line! <= lineCount, `${fx.name} criterion.line within file`).toBe(true);
           // Measurable cases declare which PDG edge kinds the criterion produces.
           expect(Array.isArray(c.pdgEdgeKinds), `${fx.name} needs criterion.pdgEdgeKinds`).toBe(
             true,

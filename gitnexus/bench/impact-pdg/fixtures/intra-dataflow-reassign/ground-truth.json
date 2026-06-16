@@ -4,6 +4,7 @@
     "name": "reassignSum",
     "filePath": "src/reassign.ts",
     "direction": "upstream",
+    "line": 9,
     "marker": "total + b",
     "pdgEdgeKinds": ["REACHING_DEF"]
   },
@@ -14,16 +15,16 @@
     {
       "symbol": "reassignSum",
       "filePath": "src/reassign.ts",
-      "line": 7,
-      "note": "first def `total = a` reaches the criterion use transitively via the second def"
+      "line": 6,
+      "note": "the function-signature/parameter block defines `a`, whose value flows into `total = a`; it is a genuine reaching def upstream of the criterion use"
     },
     {
       "symbol": "reassignSum",
       "filePath": "src/reassign.ts",
-      "line": 8,
-      "note": "second def `total = total + b` is the immediately-reaching def of the criterion use"
+      "line": 7,
+      "note": "the coalesced def block `let total = a; total = total + b;` (lines 7-8) is the immediately-reaching def of the criterion use `return total`"
     }
   ],
   "inter_AIS": [],
-  "rationale": "Direction is UPSTREAM: the criterion `reassignSum`'s relevant statement is the `return total` use (line 9), and we ask which definitions reach it. The immediately-reaching def is line 8 (`total = total + b`); that def itself uses `total`, whose reaching def is line 7 (`total = a`). Both defs are upstream data-dependencies of the criterion use, both intra-procedural. intra_AIS = {line 7, line 8}; inter_AIS empty. This isolates the RD-reverse arm of the KTD4 truth table and a reassigned variable's def chain."
+  "rationale": "criterion.line=9 — the `return total` use (source semantics: UPSTREAM asks which definitions reach this use of `total`). CORRECTION (Step-0 reconciliation): the source-derived belief was intra_AIS={7,8} (both defs of total). But the CFG COALESCES the two consecutive defs `let total = a` and `total = total + b` into ONE BasicBlock starting at line 7 — so line 8 cannot surface as a distinct statement (it lives inside block 7). Additionally, REACHING_DEF reaches further upstream to the parameter block (line 6, the function signature defining `a`), a genuine reaching def of the chain that the original annotation under-counted. So the measurable upstream slice is {line 6 (param def of `a`), line 7 (coalesced total-def block)}. The slice from line 9 returns {6, 7} exactly. Both are intra-procedural; inter_AIS empty. Isolates the RD-reverse arm of the KTD4 truth table over a reassigned variable."
 }

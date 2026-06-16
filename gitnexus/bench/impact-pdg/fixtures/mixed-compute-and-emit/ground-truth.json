@@ -4,6 +4,7 @@
     "name": "computeAndEmit",
     "filePath": "src/mixed.ts",
     "direction": "downstream",
+    "line": 12,
     "marker": "score + v",
     "pdgEdgeKinds": ["REACHING_DEF", "CDG"]
   },
@@ -37,5 +38,5 @@
       "note": "called with the computed level; cross-function reach"
     }
   ],
-  "rationale": "Criterion `computeAndEmit` is mixed-locus. The `score` def (line 12) drives a loop-carried data chain (line 14), feeds the threshold `level` (line 16), which feeds the `emit` call arg (line 17): all intra-procedural data dependence, so intra_AIS holds those three statements. Separately, the call to `emit` is a cross-function reach captured in inter_AIS. The two sets are disjoint (lines within `computeAndEmit` vs the distinct symbol `emit`). Distinct from mixed-validate-then-call: this case's intra dependence is data-flow-dominated (accumulator + ternary) rather than guard-dominated, broadening mixed-stratum coverage."
+  "rationale": "criterion.line=12 — the `score` def `let score = 0` (source semantics: `score` seeds the loop-carried data chain). Criterion `computeAndEmit` is mixed-locus. DOWNSTREAM from line 12, the `score` def drives the loop-carried data chain (line 14), feeds the threshold `level` (line 16), which feeds the `emit` call arg (line 17): all intra-procedural data dependence, so intra_AIS holds those three statements. Separately, the call to `emit` is a cross-function reach captured in inter_AIS. The two sets are disjoint (lines within `computeAndEmit` vs the distinct symbol `emit`). Step-0 reconciliation: the statement-anchored PDG slice from line 12 returns {14, 16, 17} — an EXACT match to this source-derived intra_AIS (no correction needed); call-graph reaches {emit} exactly. Distinct from mixed-validate-then-call: this case's intra dependence is data-flow-dominated (accumulator + ternary) rather than guard-dominated, broadening mixed-stratum coverage."
 }

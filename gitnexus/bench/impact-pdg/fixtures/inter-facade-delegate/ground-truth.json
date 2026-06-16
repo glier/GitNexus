@@ -4,6 +4,7 @@
     "name": "processOrder",
     "filePath": "src/facade.ts",
     "direction": "downstream",
+    "line": 21,
     "marker": "enrich(order)",
     "pdgEdgeKinds": ["REACHING_DEF", "CDG"]
   },
@@ -28,5 +29,5 @@
       "note": "the terminal delegate in the sequence"
     }
   ],
-  "rationale": "`processOrder` is a facade sequencing three delegates (validate, enrich, persist) with one guard. Its true blast radius is the delegation chain — the inter_AIS — not its own body, which only routes values between calls. intra_AIS is empty: the guard return and the local `enriched` binding carry no independent work beyond shuttling delegate results. PDG mode (intra-procedural) has ~0 inter-AIS recall here BY DESIGN; call-graph mode walks validate->enrich->persist. Anchors the `inter` stratum with a sequential-delegation shape (distinct from the dispatcher's branching shape). The single guard gives `processOrder` a CDG edge so the smoke test's edge-presence requirement is met."
+  "rationale": "criterion.line=21 — the facade's first body statement, the guard `if (!validate(order))` (source semantics: the facade's work begins here). intra_AIS is EMPTY BY DESIGN: `processOrder` sequences three delegates (validate, enrich, persist) with one guard; its true blast radius is the delegation chain — inter_AIS — not its own body, which only routes values between calls. The guard return and the local `enriched` binding carry no independent work beyond shuttling delegate results, so there is no meaningful intra ground truth. Step-0 reconciliation: the statement-anchored PDG slice from line 21 returns the guard's control-dependent body statements, but those are noise relative to the (empty) intra ground truth — PDG is intra-procedural and cannot reach the cross-function delegates. The call-graph mode walks validate->enrich->persist exactly. Anchors the `inter` stratum with a sequential-delegation shape (distinct from the dispatcher's branching shape). The single guard gives `processOrder` a CDG edge so the smoke test's edge-presence requirement is met."
 }

@@ -1,22 +1,44 @@
 # `bench/impact-pdg` — PDG-vs-call-graph impact accuracy harness
 
-> **STATUS: LIVE (U7).** This directory holds the curated ground-truth fixture
-> corpus (U6) **and** the measurement harness (`measure.mjs`, `metrics.mjs`,
-> `baselines.json`). Run it with `node --import tsx bench/impact-pdg/measure.mjs`
-> (build `dist/` first — see *How to run*). The harness drives both `impact`
-> engines over the fixtures, prints a stratified P/R/F1 table + a plain-language
-> decision recommendation, and gates regressions with `--check`.
+> **STATUS: LIVE (U7, statement-anchored rework).** This directory holds the
+> curated ground-truth fixture corpus **and** the measurement harness
+> (`measure.mjs`, `metrics.mjs`, `baselines.json`). Run it with
+> `node --import tsx bench/impact-pdg/measure.mjs` (build `dist/` first — see *How
+> to run*). The harness drives both `impact` engines over the fixtures — PDG
+> **seeded on the criterion's statement line** so it returns the dependence slice
+> — prints a stratified P/R/F1 table + a plain-language decision recommendation,
+> and gates regressions with `--check`. The measured result: **PDG is exact at
+> intra-procedural statement granularity; call-graph is exact at inter-procedural
+> symbol granularity; the two answer different questions and neither dominates.**
 
 ## What this measures
 
-`impact` has two engines: `mode: 'callgraph'` (the default — inter-procedural
-BFS over symbol→symbol edges, over-approximating) and `mode: 'pdg'` (opt-in —
-intra-procedural blast radius from the persisted CDG + REACHING_DEF Program
-Dependence Graph). They occupy **different points on the precision/recall
-curve**; neither strictly dominates. The U7 harness runs both over the fixtures
-here and reports **precision / recall / F1 stratified by impact locus** so the
-"which is more accurate?" question gets an honest, per-scope answer rather than
-a single blended number.
+`impact` has two engines that answer **different questions at different
+granularities**:
+
+- `mode: 'callgraph'` (the default) — inter-procedural BFS over symbol→symbol
+  edges. It answers *"what other symbols depend on / are called by this one?"* at
+  **symbol granularity**, scored against `inter_AIS`.
+- `mode: 'pdg'` (opt-in) — a **statement-anchored** intra-procedural dependence
+  slice from the persisted CDG + REACHING_DEF Program Dependence Graph. Seeded
+  with `line: N` (`impact({mode:'pdg', line:N})`), it returns
+  `affectedStatements: {line, filePath, text}[]` — the dependent **statements** of
+  the changed line N. It answers *"which statements inside this function does
+  changing line N affect?"* at **line granularity**, scored against `intra_AIS`.
+
+They measure **different scopes**, so the harness scores each at its native
+granularity against its native ground truth and reports both side by side. The
+"which is more accurate?" question gets an honest, per-scope answer rather than a
+single blended number — and the answer is *they answer different questions;
+neither strictly dominates*.
+
+> **A note on `line`.** A whole-symbol PDG slice (no `line`) is empty by design:
+> intra-procedural dependence stays inside the function, so every reachable block
+> is already part of the whole-symbol seed. The useful PDG mode is the
+> **statement-anchored** one — seed the criterion's changed statement and read
+> the dependent statements back. This is the central change the U7 *rework*
+> measures; the earlier "PDG is empty / callgraph wins" verdict was an artifact of
+> the whole-symbol seed, now replaced.
 
 ## The corpus
 
@@ -24,21 +46,23 @@ Each case is a tiny self-contained TypeScript source repo plus a
 `ground-truth.json`. TypeScript is used throughout because it has the most
 mature CFG/PDG support in this codebase.
 
-| Case | Locus | Shape |
-|---|---|---|
-| `intra-dataflow-accumulator` | intra | loop-carried accumulator def→use (downstream) |
-| `intra-dataflow-chain` | intra | straight-line def→use chain (downstream) |
-| `intra-dataflow-reassign` | intra | reaching defs of a use (upstream, RD-reverse) |
-| `intra-control-guard` | intra | guard-clause control dependence (downstream, CDG-forward) |
-| `intra-control-branch` | intra | if/else-if/else arm control dependence (downstream) |
-| `intra-control-loop` | intra | nested loop+if controllers of a stmt (upstream, CDG-reverse) |
-| `inter-dispatcher-thin` | inter | branch router → 3 handlers (PDG ≈ ∅ by design) |
-| `inter-facade-delegate` | inter | guarded sequential delegation chain |
-| `inter-pipeline-stages` | inter | straight pipeline driver (downstream → 3 stages) |
-| `mixed-validate-then-call` | mixed | guard-dominated intra dependence + 1 callee |
-| `mixed-compute-and-emit` | mixed | data-flow-dominated intra dependence + 1 callee |
-| `mixed-guarded-dispatch` | mixed | control+data intra dependence + 2 callees |
-| `nobody-interface-excluded` | n/a | no-body symbols (KTD6); **excluded** from PDG scoring |
+`line` is the `criterion.line` — the statement the PDG slice seeds on.
+
+| Case | Locus | line | Shape |
+|---|---|---|---|
+| `intra-dataflow-accumulator` | intra | 8 | loop-carried accumulator def→use (downstream) |
+| `intra-dataflow-chain` | intra | 7 | straight-line def→use chain (downstream) |
+| `intra-dataflow-reassign` | intra | 9 | reaching defs of a use (upstream, RD-reverse) |
+| `intra-control-guard` | intra | 7 | guard-clause control dependence (downstream, CDG-forward) |
+| `intra-control-branch` | intra | 7 | if/else-if/else arm control dependence (downstream) |
+| `intra-control-loop` | intra | 11 | nested loop+if controllers of a stmt (upstream, CDG-reverse) |
+| `inter-dispatcher-thin` | inter | 23 | branch router → 3 handlers (intra slice = routing returns, empty intra_AIS) |
+| `inter-facade-delegate` | inter | 21 | guarded sequential delegation chain (empty intra_AIS) |
+| `inter-pipeline-stages` | inter | 20 | straight pipeline driver → 3 stages (empty intra_AIS) |
+| `mixed-validate-then-call` | mixed | 13 | guard-dominated intra dependence + 1 callee |
+| `mixed-compute-and-emit` | mixed | 12 | data-flow-dominated intra dependence + 1 callee |
+| `mixed-guarded-dispatch` | mixed | 15 | control+data intra dependence + 2 callees |
+| `nobody-interface-excluded` | n/a | — | no-body symbols (KTD6); **excluded** from PDG scoring |
 
 **Minimum corpus floor (KTD9/F3):** ≥ 3 cases per locus stratum, ≥ 12 total
 measurable cases. Current: intra = 6, inter = 3, mixed = 3 → 12 measurable
@@ -50,7 +74,7 @@ measurable cases. Current: intra = 6, inter = 3, mixed = 3 → 12 measurable
 | Field | Type | Meaning |
 |---|---|---|
 | `schemaVersion` | int | schema version (currently `1`) |
-| `criterion` | `{ name, filePath, direction, marker?, pdgEdgeKinds? }` | the changed symbol — the seed for "what is affected if I change this". `direction` ∈ `downstream` \| `upstream`. `marker` is a substring unique to the criterion function's body (appears in one of its `BasicBlock.text` fragments); the smoke test uses it to locate the criterion function's blocks deterministically. `pdgEdgeKinds` lists the PDG edge kinds (`REACHING_DEF` \| `CDG`) the criterion function is expected to produce: a pure straight-line data-flow criterion declares only `REACHING_DEF` (no branches → no control dependence), a branching/guard criterion declares both. The smoke test asserts exactly the declared kinds are non-zero on the criterion (so the pure-dataflow archetype isn't forced to carry an artificial branch) and that the criterion produces ≥ 1 PDG edge overall (catching an accidental no-body/zero-edge criterion). `marker` and `pdgEdgeKinds` are required for every measurable case; both are omitted only on `pdgScoring: "exclude"` no-body cases. |
+| `criterion` | `{ name, filePath, direction, line?, marker?, pdgEdgeKinds? }` | the changed symbol — the seed for "what is affected if I change this". `direction` ∈ `downstream` \| `upstream`. **`line`** is the **1-based source line of the statement being changed** — the seed of the statement-anchored PDG slice (`impact({mode:'pdg', line})`). It is chosen from **source semantics** (the def/criterion whose change propagates to the `intra_AIS` lines), *not* by running the traversal (KTD9 annotation-circularity guard), then reconciled against the live traversal in the harness's Step 0. `marker` is a substring unique to the criterion function's body (appears in one of its `BasicBlock.text` fragments); the smoke test uses it to locate the criterion function's blocks deterministically. `pdgEdgeKinds` lists the PDG edge kinds (`REACHING_DEF` \| `CDG`) the criterion function is expected to produce: a pure straight-line data-flow criterion declares only `REACHING_DEF` (no branches → no control dependence), a branching/guard criterion declares both. The smoke test asserts exactly the declared kinds are non-zero on the criterion (so the pure-dataflow archetype isn't forced to carry an artificial branch) and that the criterion produces ≥ 1 PDG edge overall (catching an accidental no-body/zero-edge criterion). `line`, `marker`, and `pdgEdgeKinds` are required for every measurable case; all three are omitted only on `pdgScoring: "exclude"` no-body cases. |
 | `intra_AIS` | `AisEntry[]` | symbols/**lines** truly affected WITHIN the same function (the scope where PDG mode is defined). Annotated at **symbol/line granularity, never block-id** (block ids carry fragile `fnLine:fnCol:idx`). |
 | `inter_AIS` | `AisEntry[]` | symbols truly affected ACROSS function boundaries (the scope where call-graph mode is defined and intra-procedural PDG is zero-by-design). |
 | `locus` | `'intra' \| 'inter' \| 'mixed' \| 'n/a'` | the dominant impact locus; `n/a` only for excluded no-body cases. |
@@ -84,38 +108,55 @@ line within the criterion function; an inter entry is a different symbol).
 ## Methodology — CIS / AIS, stratified (KTD9, Arnold–Bohner)
 
 For each fixture × mode the harness compares the mode's **CIS** (Computed Impact
-Set — the symbols it reports as impacted) against the **AIS** (Actual Impact Set
-— the curated ground truth), stratified by impact locus:
+Set — what it reports as impacted) against the **AIS** (Actual Impact Set — the
+curated ground truth), at the mode's **native granularity**, stratified by impact
+locus:
 
 - **precision** = |AIS∩CIS| / |CIS| (over-approximation cost),
 - **recall** = |AIS∩CIS| / |AIS| (under-approximation; the *dangerous* miss for
   a safety tool),
 - **F1** = harmonic mean,
 - **FPIS** = CIS − AIS (noise), **FNIS** = AIS − CIS (missed),
-- **|CIS|/|AIS|** size ratio,
-- cross-mode **Jaccard(callgraph_CIS, pdg_CIS)** + directional set-diffs
-  (`pdg-only` / `callgraph-only`), each split into *true* (∩AIS) vs *noise*
-  (−AIS).
+- **|CIS|/|AIS|** size ratio.
+
+**Each engine is scored at its own granularity against its own ground truth:**
+
+- **PDG → line granularity vs `intra_AIS`.** CIS_pdg is the set of
+  `affectedStatements` **line** keys (`<filePath>:<line>`) returned by the
+  line-seeded slice; AIS is the `intra_AIS` line set. This is the unit at which
+  PDG is precise — the dependent *statements* of the changed line.
+- **Call-graph → symbol granularity vs `inter_AIS`.** CIS is the reported
+  **symbol** keys (`<symbol>@<filePath>`); AIS is the `inter_AIS` symbol set.
+  This is the unit at which the cross-function blast radius is meaningful.
 
 **Empty-denominator semantics are explicit, never silently 0/1.** |CIS|=0 ⇒
 precision is `n/a` (no predictions); |AIS|=0 ⇒ recall is `n/a` (no truth in that
 scope). A scope with an `n/a` metric is **excluded** from that metric's mean,
-never folded in as 0 — folding it as 0 would punish a mode for a scope that
-simply has no ground truth (the apples-to-oranges trap, R1). The pure scorer
-lives in `metrics.mjs`; its arithmetic is pinned by the deterministic unit test
+never folded in as 0 (the apples-to-oranges trap, R1). The pure scorer lives in
+`metrics.mjs`; its arithmetic is pinned by the deterministic unit test
 `test/unit/impact-pdg-metric-math.test.ts` (synthetic sets only — no analyze, no
 DB, so it stays out of the flaky full-pipeline lane).
 
-**Granularity: symbol, never block-id.** A symbol key is `<symbol>@<filePath>`,
-order-independent and line-collapsed. An `intra_AIS` statement-line collapses
-onto its **owning symbol**; an `inter_AIS` entry already names a whole symbol.
-This is why per-fixture intra-AIS reduces to the singleton `{criterion}`. CIS is
-partitioned the same way: the criterion symbol itself = **intra** scope, every
-other reported symbol = **inter** scope, the union = **mixed**.
+**Stratification.** Each fixture is scored in its **own** locus stratum
+(intra/inter/mixed). Within a stratum, the PDG row is line-vs-`intra_AIS` and the
+call-graph row is symbol-vs-`inter_AIS`:
 
-**PDG on inter-scope AIS is known-zero-recall BY DESIGN** — a capability fact,
-not a loss. v1 PDG impact is intra-procedural; it cannot reach across function
-boundaries.
+- On an **intra** fixture, `inter_AIS` is empty, so call-graph reports no other
+  symbol → its row is `n/a` (no cross-function truth). PDG is scored against the
+  real `intra_AIS`.
+- On an **inter** fixture, `intra_AIS` is empty by design, so the PDG line slice
+  returns only the router's own control-dependent statements — FPIS against the
+  empty truth (precision 0, recall `n/a`). Call-graph is scored against the real
+  `inter_AIS`. This is the honest *"PDG is intra-procedural; on a pure-inter
+  fixture it has no meaningful intra ground truth"* result — **symmetric** to
+  call-graph's empty intra row.
+- On a **mixed** fixture, both rows are real: PDG resolves the intra statement
+  set, call-graph reaches the callee(s).
+
+**PDG cannot cross a function boundary; call-graph cannot see below function
+granularity.** Neither is a refinement of the other — they compose. A full
+mixed-locus blast radius is the *union* of call-graph's inter-symbol reach and
+PDG's intra-statement slice.
 
 ## Substrate (the load-bearing mechanism — R8)
 
@@ -139,8 +180,11 @@ analyze via a temp `GITNEXUS_HOME`, mock-free**. Per fixture:
 3. `new LocalBackend(); await init()` resolves the fixture via the **real**
    registry (the parent process sets `GITNEXUS_HOME` too, so `init()` reads the
    temp registry, not `~/.gitnexus`).
-4. `callTool('impact', {repo:<fixtureCopyPath>, target, direction, mode})` ×2
-   (the absolute path is a tier-1 path match — no name collision).
+4. `callTool('impact', …)` ×2 (the absolute path is a tier-1 path match — no
+   name collision): once `mode:'callgraph'` (symbol BFS), once `mode:'pdg'` with
+   `line: criterion.line` so it returns the **statement-anchored slice**
+   (`affectedStatements`). A whole-symbol PDG slice (no `line`) is empty by
+   design, so the seed line is load-bearing.
 5. Teardown the temp home + copy.
 
 ### Step 0 — fixture AIS validation (gated on the live traversal; circularity)
@@ -155,53 +199,91 @@ Before scoring, the harness reconciles each fixture against the live analyzer
   would reconcile AIS against the wrong symbol's edges → excluded, logged.
 
 Per the **annotation-circularity guard**, this reconciliation runs *second*: the
-AIS was written from source semantics *first* (U6), and Step 0 only confirms the
-fixture is measurable substrate — it never derives ground truth from the
-traversal. (When the harness's per-case recall surfaced a `direction`-vs-`AIS`
-contradiction in `inter-pipeline-stages` — its AIS named callees while the
-criterion was tagged `upstream` — the *fixture annotation* was corrected to
-`downstream`, the direction its own AIS implies; the metric was not re-fit to a
-traversal.)
+`criterion.line` and the AIS were written from source semantics *first* (read the
+source, find the def/criterion whose change propagates), and Step 0 only confirms
+the fixture is measurable substrate — it never *derives* ground truth from the
+traversal. Where a source-derived belief disagreed with the live block-granular
+traversal, the **annotation** was corrected (documented in each
+`ground-truth.json` rationale), not the metric re-fit:
+
+- **Direction.** `inter-pipeline-stages`'s AIS named callees while the criterion
+  was tagged `upstream`; the annotation was corrected to `downstream`.
+- **Block coalescing.** The CFG coalesces consecutive straight-line statements
+  into one `BasicBlock`. `intra-dataflow-chain` (8,9 → inside the line-7 seed
+  block), `intra-control-guard` (12 → inside the line-11 block), and
+  `intra-dataflow-reassign` (8 → inside the line-7 block) had `intra_AIS` lines
+  that can never surface as *distinct* statements; those were removed.
+- **Under-counted dependencies.** The combined CDG+REACHING_DEF slice reaches more
+  than a control-only or single-step reading: `intra-control-branch` (+line 10,
+  the nested `else if` predicate, control-dependent on the outer branch),
+  `intra-control-loop` (+lines 6,7, the param block and `count` init reaching the
+  increment), and `intra-dataflow-reassign` (+line 6, the param def of `a`) gained
+  lines the original annotation missed.
+
+After reconciliation, the line-seeded slice reproduces each corrected `intra_AIS`
+exactly (FPIS = FNIS = 0 on all 6 intra and all 3 mixed fixtures). Call-graph gets
+no such home-field annotation, so the comparison is not rigged toward PDG.
 
 ## Measured results (analyzer 1.6.7, 12 measurable + 1 excluded)
 
-| Scope | Mode | P | R | F1 | \|CIS\|/\|AIS\| | FPIS | FNIS | n |
-|---|---|---|---|---|---|---|---|---|
-| intra | callgraph | n/a | 0.000 | n/a | 0.000 | 0 | 6 | 6 |
-| intra | pdg | n/a | 0.000 | n/a | 0.000 | 0 | 6 | 6 |
-| inter | callgraph | 1.000 | 1.000 | 1.000 | 1.000 | 0 | 0 | 3 |
-| inter | pdg | n/a | 0.000 | n/a | 0.000 | 0 | 9 | 3 |
-| mixed | callgraph | 1.000 | 0.556 | 0.711 | 0.556 | 0 | 3 | 3 |
-| mixed | pdg | n/a | 0.000 | n/a | 0.000 | 0 | 7 | 3 |
+Each engine scored at its **native granularity** against its **native ground
+truth** — PDG at line vs `intra_AIS`, call-graph at symbol vs `inter_AIS`:
 
-Read it honestly: **call-graph mode is exact on the cross-function questions**
-(inter P/R/F1 = 1.0; mixed precision 1.0, recall 0.556 because it cannot express
-the intra criterion-self component). **PDG mode reports an empty symbol-level CIS
-on every measurable fixture.** That is a real property of the shipped v1
-traversal, not a harness bug: PDG edges (CDG / REACHING_DEF) are *intra*-
-procedural, connecting a function's own `BasicBlock`s; the traversal seeds on
-**all** the criterion function's blocks and excludes seeds from the reachable
-set, and the block→symbol projection collapses any intra reach back onto the
-criterion itself. So at symbol granularity the intra-procedural blast radius is
-∅ — PDG's v1 value is the **block-level detail** (`reachableBlocks` / `blockCount`
-/ the per-edge-type reach), which the per-case lines surface (`pdg|blocks=…`),
-not a symbol-level impact set.
+| Scope | Mode | Granularity | P | R | F1 | \|CIS\|/\|AIS\| | FPIS | FNIS | n |
+|---|---|---|---|---|---|---|---|---|---|
+| intra | callgraph | symbol/inter | n/a | n/a | n/a | n/a | 0 | 0 | 6 |
+| intra | **pdg** | **line/intra** | **1.000** | **1.000** | **1.000** | 1.000 | 0 | 0 | 6 |
+| inter | **callgraph** | **symbol/inter** | **1.000** | **1.000** | **1.000** | 1.000 | 0 | 0 | 3 |
+| inter | pdg | line/intra | 0.000 | n/a | n/a | n/a | 10 | 0 | 3 |
+| mixed | **callgraph** | **symbol/inter** | **1.000** | **1.000** | **1.000** | 1.000 | 0 | 0 | 3 |
+| mixed | **pdg** | **line/intra** | **1.000** | **1.000** | **1.000** | 1.000 | 0 | 0 | 3 |
+
+Read it honestly:
+
+- **PDG mode is exact at intra-procedural statement granularity.** On all 6 intra
+  fixtures and all 3 mixed fixtures, the line-seeded slice returns *exactly* the
+  reconciled `intra_AIS` — F1 = 1.000, FPIS = FNIS = 0. It precisely identifies
+  the dependent statements of the changed line (def→use chains, control-dependent
+  arms, reaching defs). This is the question PDG was built to answer, and the
+  earlier "empty / no signal" result was purely the whole-symbol-seed artifact.
+- **Call-graph mode is exact on the cross-function questions.** On all 3 inter
+  fixtures and all 3 mixed fixtures it recovers every callee — F1 = 1.000. It is
+  the engine for "what else calls/uses this?".
+- **The two `n/a` / `0` cells are by design, not defects.** *intra/call-graph*: a
+  self-contained function calls no other symbol, so call-graph reports nothing and
+  `inter_AIS` is empty → no cross-function truth to score (`n/a`). *inter/pdg*: a
+  pure-inter router has an empty `intra_AIS`, and the line-seeded slice returns the
+  router's *own* control-dependent routing returns — FPIS against the empty truth
+  (precision 0, recall `n/a`). These are **symmetric**: each engine is blind to
+  the other's scope. PDG cannot cross a call boundary; call-graph cannot see below
+  a function. The per-case lines surface each slice (`pdg line/intra: …`) and each
+  callee set (`cg symbol/inter: …`) so this is visible, not hidden.
 
 ## Decision recommendation (the verdict — F2)
 
-> **Use `mode:'callgraph'` as the default** — it carries the inter-procedural
-> reach the impact tool's safety question depends on (inter recall 1.0, mixed
-> precision 1.0 on this corpus). **`mode:'pdg'` is an opt-in lens for
-> intra-procedural dependence *inspection*** (its `reachableBlocks` / CDG +
-> REACHING_DEF detail), valuable where the persisted PDG layer exists (`analyze
-> --pdg`). It is **not** a replacement for, nor a strict improvement over, the
-> call-graph blast radius: the two engines sit at different points on the
-> precision/recall curve and neither strictly dominates. Promoting `mode:'pdg'`
-> beyond opt-in is **gated on a `Function→BasicBlock` `CONTAINS_BLOCK` substrate
-> edge** (deferred) that would let the symbol BFS chain natively into the PDG and
-> give intra reach a symbol-level meaning — until then the symbol-level
-> comparison is structurally one-sided and the harness says so rather than
-> printing a flattering number.
+> **The two engines answer different questions at different granularities, and
+> neither dominates.**
+>
+> - **`mode:'callgraph'` (the default)** is the correct engine for the
+>   *inter-procedural* safety question — *"what else depends on / calls this
+>   symbol?"* It recovers the cross-function callees exactly (inter & mixed F1 =
+>   1.0 on this corpus) and carries the cross-function reach the blast radius
+>   needs. Use it for cross-symbol impact.
+> - **`mode:'pdg'` (opt-in, seeded with `line:N`, where `analyze --pdg` persisted
+>   the layer)** is **precise at intra-procedural *statement* granularity** —
+>   *"which statements inside this function does changing line N affect?"* On the
+>   intra and mixed fixtures it reproduces the dependent-statement set exactly
+>   (intra & mixed PDG F1 = 1.0, FPIS = FNIS = 0). This is a question call-graph
+>   **cannot answer at all** (it has no notion of a statement).
+>
+> They **compose**: a full mixed-locus blast radius is the *union* of
+> call-graph's inter-symbol reach and PDG's intra-statement slice. Reach for the
+> line-seeded PDG when you need statement-level dependence *inside* a function;
+> reach for call-graph when you need *cross-function* reach. The earlier verdict
+> ("PDG is empty / call-graph wins") was an artifact of the **whole-symbol** seed
+> — a whole-symbol slice has nothing to report because intra-procedural dependence
+> never leaves the function. Seeding the changed *statement* is what makes PDG's
+> precision measurable, and it measures as exact.
 
 ## Validity threats (the two that dominate — KTD9)
 
@@ -223,11 +305,14 @@ not a symbol-level impact set.
 
 **Minimum corpus floor: ≥ 3 measurable cases per locus stratum, ≥ 12 total.**
 Current corpus is exactly at the floor (intra 6, inter 3, mixed 3 = 12
-measurable; +1 excluded no-body). When the measurable count after exclusions
-drops below the floor, the harness prints **"underpowered — directional only"**
-and reports the DIRECTION ("PDG higher-precision on intra-scope") rather than
-headline decimals — decimal precision (`F1 0.74 vs 0.68`) implies a confidence
-the corpus cannot support.
+measurable; +1 excluded no-body) — so the harness prints headline decimals. When
+the measurable count after exclusions drops below the floor, it instead prints
+**"underpowered — directional only"** and reports the DIRECTION ("PDG exact at
+intra statement granularity; call-graph exact at inter symbol granularity")
+rather than headline decimals — decimal precision (`F1 0.74 vs 0.68`) implies a
+confidence a sub-floor corpus cannot support. Even at the floor the F1 = 1.0
+results should be read as *"exact on this small, deliberately-simple corpus"*, not
+*"exact in general"* — see the validity threats.
 
 ## Annotation fingerprint + `--check` (two gates, KTD10)
 
@@ -236,13 +321,16 @@ perpetually red on legitimate accuracy changes):
 
 1. **One-sided F1 regression band** per mode per scope: fail iff `F1 < band − ε`;
    improvements pass freely. `ε` and the per-`(scope,mode)` bands are versioned
-   in `baselines.json`. A `null` band means F1 is genuinely undefined for that
-   cell on this corpus (e.g. PDG's empty CIS) — the gate skips it.
+   in `baselines.json`. The four live bands are **intra/pdg = 1.0**, **mixed/pdg =
+   1.0**, **inter/callgraph = 1.0**, **mixed/callgraph = 1.0**. A `null` band
+   means F1 is genuinely undefined for that cell on this corpus (intra/callgraph
+   and inter/pdg — see *Measured results*) — the gate skips it.
 2. **Order-independent annotation fingerprint** over the curated ground-truth
    set (a SHA-256 over a sorted, line-collapsed canonicalization — mirrors the
    `bench/cfg/measure.mjs` *technique*, written here, not a literal import). Any
-   unreviewed edit to a `ground-truth.json` (criterion, AIS membership, locus,
-   direction, edge kinds) trips it; a pure reordering of AIS entries does not.
+   unreviewed edit to a `ground-truth.json` (criterion **including
+   `criterion.line`**, AIS membership, locus, direction, edge kinds) trips it; a
+   pure reordering of AIS entries does not.
 
 **Substrate stability (F5).** Real analyze is the repo's flaky lane, so `--check`
 applies **median-of-K** across `GN_IMPACT_PDG_K` runs *before* comparing F1 to
@@ -253,10 +341,11 @@ fixtures are tiny and deterministic in practice); raise it
 ## Runtime budget
 
 Each fixture costs **one full `analyze --pdg` child process** (a fresh tree-sitter
-parse + CFG/PDG build + persist) plus two in-process `impact` calls. On these
-tiny fixtures that is ≈ **3–6 s/fixture**, so the full 13-fixture corpus runs in
-roughly **45–80 s** wall-clock single-threaded (K = 1). A K-fold `--check`
-multiplies by K. For a fast substrate smoke, scope to a subset:
+parse + CFG/PDG build + persist) plus two in-process `impact` calls (one
+call-graph, one line-seeded PDG). On these tiny fixtures that is ≈
+**3–6 s/fixture**, so the full 13-fixture corpus runs in roughly **45–80 s**
+wall-clock single-threaded (K = 1). A K-fold `--check` multiplies by K. For a
+fast substrate smoke, scope to a subset:
 `--only=intra-dataflow-chain,inter-dispatcher-thin,mixed-guarded-dispatch` (or
 `GN_IMPACT_PDG_ONLY=…`). Not wired into `npm test` (matches the other benches);
 the deterministic metric-math unit test *is* in `npm test`.

@@ -4,6 +4,7 @@
     "name": "dispatch",
     "filePath": "src/dispatcher.ts",
     "direction": "downstream",
+    "line": 23,
     "marker": "kind === 'b'",
     "pdgEdgeKinds": ["REACHING_DEF", "CDG"]
   },
@@ -28,5 +29,5 @@
       "note": "the fallthrough route"
     }
   ],
-  "rationale": "`dispatch` is a thin router whose true impact is ENTIRELY cross-function: changing it affects the three handlers it dispatches to (handleA/handleB/handleDefault). There is no meaningful intra-procedural blast radius — the only intra-statements are the routing branch returns, which carry no work of their own. So intra_AIS is empty and inter_AIS is the three callees. PDG mode is intra-procedural by design, so on this case its inter-AIS recall is ~0 BY DESIGN (a capability fact, not a defect); the call-graph mode, with inter-procedural reach, finds all three. This case anchors the `inter` stratum so the harness can report complementary coverage. NOTE: the smoke test still requires `dispatch` to produce SOME CDG/REACHING_DEF edges (its routing branches do) — a zero-edge criterion would be unmeasurable; but those edges are not the AIS."
+  "rationale": "criterion.line=23 — the dispatcher's own first body statement `if (kind === 'a')` (source semantics: the router's work begins here). intra_AIS is EMPTY BY DESIGN: `dispatch` is a thin router whose TRUE impact is ENTIRELY cross-function — changing it affects the three handlers it routes to (handleA/handleB/handleDefault), captured in inter_AIS. The only intra statements are the routing branch returns, which carry no work of their own, so there is no meaningful intra-procedural ground truth. Step-0 reconciliation: the statement-anchored PDG slice from line 23 DOES return the routing return statements (the branch predicates control-depend on each other and each return), but those are NOT the meaningful blast radius — PDG is intra-procedural, so on a pure-inter fixture its intra slice is noise relative to the (empty) intra ground truth. This is the symmetric counterpart of call-graph's empty intra slice on the intra fixtures: each engine is blind to the other's locus. The call-graph mode (inter-procedural) finds all three handlers exactly. Anchors the `inter` stratum. NOTE: the smoke test requires `dispatch` to produce SOME CDG/REACHING_DEF edges (its routing branches do) — a zero-edge criterion would be unmeasurable; but those edges are not the AIS."
 }

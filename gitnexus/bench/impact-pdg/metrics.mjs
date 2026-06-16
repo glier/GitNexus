@@ -8,25 +8,75 @@
  * (Arch-review Issue 5). `measure.mjs` imports these for the live loop.
  *
  * ── CIS / AIS framing (KTD9 — Arnold–Bohner) ───────────────────────────────
- * CIS = Computed Impact Set: the symbols a mode REPORTS as impacted.
- * AIS = Actual Impact Set: the curated ground-truth symbols truly affected.
+ * CIS = Computed Impact Set: what a mode REPORTS as impacted.
+ * AIS = Actual Impact Set: the curated ground-truth set truly affected.
  *   precision = |AIS∩CIS| / |CIS|   (over-approximation cost; ∅ CIS ⇒ undefined)
  *   recall    = |AIS∩CIS| / |AIS|   (under-approximation; ∅ AIS ⇒ undefined)
  *   F1        = harmonic mean        (undefined if either is undefined)
  *   FPIS = CIS − AIS  (false positives — noise)
  *   FNIS = AIS − CIS  (false negatives — the DANGEROUS miss for a safety tool)
  *
- * ── Granularity (locked) ───────────────────────────────────────────────────
- * Symbol granularity, NEVER block-id (block ids carry fragile fnLine:fnCol:idx).
- * A symbol key is `<symbol>@<filePath>` — order-independent, line-collapsed. An
- * `intra_AIS` entry (statement-granular: lines within the criterion function)
- * collapses to its OWNING symbol; an `inter_AIS` entry already names a whole
- * symbol. This is why per-scope intra-AIS is the singleton {criterion}.
+ * ── Granularity: the two engines measure DIFFERENT scopes (U7 rework) ───────
+ * The two `impact` engines answer different questions at different granularities,
+ * so they are scored against different ground truths:
+ *
+ *  - **PDG mode** (`impact({mode:'pdg', line:N})`) is scored at intra-procedural
+ *    STATEMENT granularity. The statement-anchored slice returns
+ *    `affectedStatements: {line,filePath,text}[]` — the dependent statements of
+ *    the criterion line N. CIS_pdg is the set of those LINE keys
+ *    (`<filePath>:<line>`, via `pdgLineCis`); AIS is the `intra_AIS` line set
+ *    (via `intraLineAis`). This is the unit at which PDG is precise.
+ *  - **Call-graph mode** is scored at inter-procedural SYMBOL granularity. CIS is
+ *    the reported symbols (`<symbol>@<filePath>`, via `symbolKey`); AIS is the
+ *    `inter_AIS` symbol set (via `aisByScope`). This is the unit at which the
+ *    call-graph blast radius is meaningful.
+ *
+ * Neither is a strict refinement of the other: PDG resolves the dependent
+ * statements WITHIN a function but cannot cross a call boundary; call-graph
+ * resolves the cross-function symbol reach but cannot see below function
+ * granularity. The harness reports both, side by side, per locus stratum.
+ *
+ * `partitionCisByScope`/`aisByScope` (symbol-level) remain for the call-graph
+ * path; `pdgLineCis`/`intraLineAis` (line-level) drive the PDG path.
  */
 
 /** Order-independent symbol key. Collapses statement lines onto their symbol. */
 export function symbolKey(symbol, filePath) {
   return `${symbol}@${filePath}`;
+}
+
+/**
+ * Statement-LINE key for the PDG path (U7 rework). PDG mode is now scored at
+ * intra-procedural STATEMENT granularity: the `impact({mode:'pdg', line})` slice
+ * returns `affectedStatements: {line, filePath, text}[]`, and the intra ground
+ * truth is the per-line `intra_AIS`. A line key is `<filePath>:<line>` —
+ * order-independent and statement-granular (NOT collapsed onto the owning
+ * symbol the way `symbolKey` is). This is the unit at which PDG is precise.
+ */
+export function lineKey(filePath, line) {
+  return `${filePath}:${line}`;
+}
+
+/** CIS_pdg = the set of affected-statement LINE keys from an impact pdg result. */
+export function pdgLineCis(affectedStatements) {
+  const out = new Set();
+  for (const s of affectedStatements ?? []) {
+    if (s && typeof s.line === 'number' && typeof s.filePath === 'string') {
+      out.add(lineKey(s.filePath, s.line));
+    }
+  }
+  return out;
+}
+
+/** AIS_intra = the set of `intra_AIS` LINE keys (statement-granular ground truth). */
+export function intraLineAis(gt) {
+  const out = new Set();
+  for (const e of gt.intra_AIS ?? []) {
+    if (e && typeof e.line === 'number' && typeof e.filePath === 'string') {
+      out.add(lineKey(e.filePath, e.line));
+    }
+  }
+  return out;
 }
 
 /** Canonicalize an iterable of {symbol,filePath} (or pre-made keys) → a Set. */
@@ -210,10 +260,14 @@ export function canonicalizeAnnotationSet(fixtures) {
     .map((fx) => {
       const c = fx.gt.criterion;
       const kinds = Array.isArray(c.pdgEdgeKinds) ? [...c.pdgEdgeKinds].sort().join(',') : '-';
+      // `line` is the criterion's 1-based statement anchor (U7 — the seed of the
+      // statement-anchored PDG slice). It is part of the ground truth: changing
+      // which statement the slice seeds on changes the measured PDG impact set,
+      // so an unreviewed `criterion.line` edit MUST trip the fingerprint gate.
       return [
         `case=${fx.name}`,
         `schema=${fx.gt.schemaVersion}`,
-        `crit=${c.name}|${c.filePath}|${c.direction}|${c.marker ?? '-'}|${kinds}`,
+        `crit=${c.name}|${c.filePath}|${c.direction}|${c.line ?? '-'}|${c.marker ?? '-'}|${kinds}`,
         `locus=${fx.gt.locus}`,
         `pdgScoring=${fx.gt.pdgScoring ?? '-'}`,
         `provenance=${fx.gt.provenance}`,

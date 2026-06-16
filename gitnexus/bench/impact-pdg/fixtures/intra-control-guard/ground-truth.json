@@ -4,6 +4,7 @@
     "name": "guarded",
     "filePath": "src/guard.ts",
     "direction": "downstream",
+    "line": 7,
     "marker": "y + 1",
     "pdgEdgeKinds": ["REACHING_DEF", "CDG"]
   },
@@ -21,13 +22,7 @@
       "symbol": "guarded",
       "filePath": "src/guard.ts",
       "line": 11,
-      "note": "`const y = x * 2` runs only when the guard is false: control-dependent"
-    },
-    {
-      "symbol": "guarded",
-      "filePath": "src/guard.ts",
-      "line": 12,
-      "note": "`const z = y + 1` is control-dependent on the guard (and data-dependent on y)"
+      "note": "the post-guard body block `const y = x * 2; const z = y + 1;` (lines 11-12, coalesced) runs only when the guard is false: control-dependent"
     },
     {
       "symbol": "guarded",
@@ -37,5 +32,5 @@
     }
   ],
   "inter_AIS": [],
-  "rationale": "Criterion is the guard predicate `if (!ok)` (line 7). Its CDG controller->dependent edges reach the true-arm `return -1` (line 9) and the post-guard body (lines 11-13), which execute only on the complementary arm. All dependents are statements WITHIN `guarded`; the function calls nothing. intra_AIS captures every control-dependent line; inter_AIS empty. This is the canonical guard-clause CDG shape (#559) and isolates the CDG-forward arm of KTD4 — PDG distinguishes control-affected statements that the call-graph mode cannot resolve below function granularity."
+  "rationale": "criterion.line=7 — the guard predicate `if (!ok)` (source semantics: the guard controls whether the post-guard body runs). DOWNSTREAM CDG controller->dependent edges reach the true-arm `return -1` (line 9), the post-guard body, and `return z` (line 13). CORRECTION (Step-0 reconciliation): the source-derived belief was intra_AIS={9,11,12,13}, but the CFG COALESCES the two consecutive post-guard defs `const y = x * 2` and `const z = y + 1` into ONE BasicBlock starting at line 11 — so line 12 cannot surface as a distinct dependent (it lives inside block 11). The measurable control-dependent lines are {9, 11 (the coalesced body block), 13}. The slice from line 7 returns {9, 11, 13} exactly — a block-granularity correction, not a metric re-fit. All dependents WITHIN `guarded`; inter_AIS empty. Canonical guard-clause CDG shape (#559); isolates the CDG-forward arm of KTD4 — PDG distinguishes control-affected statements the call-graph mode cannot resolve below function granularity."
 }

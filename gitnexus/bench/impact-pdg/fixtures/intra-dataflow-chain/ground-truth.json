@@ -4,6 +4,7 @@
     "name": "chainCompute",
     "filePath": "src/chain.ts",
     "direction": "downstream",
+    "line": 7,
     "marker": "b - 3",
     "pdgEdgeKinds": ["REACHING_DEF"]
   },
@@ -14,22 +15,10 @@
     {
       "symbol": "chainCompute",
       "filePath": "src/chain.ts",
-      "line": 8,
-      "note": "`b = a * 2` is directly data-dependent on the def of `a`"
-    },
-    {
-      "symbol": "chainCompute",
-      "filePath": "src/chain.ts",
-      "line": 9,
-      "note": "`c = b - 3` is transitively data-dependent on `a` via `b`"
-    },
-    {
-      "symbol": "chainCompute",
-      "filePath": "src/chain.ts",
       "line": 10,
-      "note": "`return c` is transitively data-dependent on `a` via the chain"
+      "note": "`return c` is transitively data-dependent on `a` via the chain — the only distinct downstream BasicBlock"
     }
   ],
   "inter_AIS": [],
-  "rationale": "Criterion's changed statement is the def of `a` (line 7). A straight-line REACHING_DEF chain carries `a` -> `b` (line 8) -> `c` (line 9) -> `return` (line 10). Every downstream statement in the function is data-dependent on `a`; none escapes the function (no calls, no annotated caller). intra_AIS is exactly the three downstream lines; inter_AIS is empty. This case stresses transitive forward def->use reachability with no control structure, isolating the RD-forward arm of the KTD4 truth table."
+  "rationale": "criterion.line=7 — the def of `a` (`const a = input + 1`), the changed statement (source semantics: `a` seeds the straight-line def->use chain a->b->c->return). DOWNSTREAM from line 7. CORRECTION (Step-0 reconciliation): the original source-derived belief was intra_AIS={8,9,10} (every downstream statement). But the CFG COALESCES consecutive straight-line statements into ONE BasicBlock: lines 7-9 (`const a`, `const b`, `const c`) share a single block whose start line is 7 — the criterion's own seed block. The traversal excludes the seed, so lines 8 and 9 can never surface as DISTINCT dependent statements; they are inside the criterion block. The only separate downstream BasicBlock is `return c` (line 10). So the measurable intra_AIS is exactly {line 10}. This is a block-granularity fact (the human annotation was at finer-than-block statement granularity), not a metric re-fit: the slice from line 7 returns {10}, an exact match to the corrected annotation. Isolates the RD-forward arm of the KTD4 truth table; inter_AIS empty (no calls)."
 }

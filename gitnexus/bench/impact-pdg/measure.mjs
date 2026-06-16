@@ -1,11 +1,18 @@
 /**
  * U7 — PDG-vs-call-graph impact ACCURACY measurement harness.
  *
- * Runs BOTH `impact` engines (`mode:'callgraph'` and `mode:'pdg'`) over the
- * curated U6 ground-truth fixtures, computes precision/recall/F1 stratified by
- * impact locus (intra / inter / mixed) plus cross-mode Jaccard + set-diffs,
- * prints a stratified report ending in a plain-language DECISION RECOMMENDATION,
- * and (under `--check`) gates regressions with two NON-byte-identity gates.
+ * Runs BOTH `impact` engines over the curated U6 ground-truth fixtures and
+ * scores each at its NATIVE granularity:
+ *   - `mode:'pdg'` is seeded on the criterion's STATEMENT (`line: criterion.line`)
+ *     and scored at intra-procedural LINE granularity against `intra_AIS`
+ *     (CIS_pdg = the `affectedStatements` line set);
+ *   - `mode:'callgraph'` is scored at inter-procedural SYMBOL granularity against
+ *     `inter_AIS` (CIS = the reported symbol set).
+ * It computes precision/recall/F1 stratified by impact locus (intra/inter/mixed)
+ * plus cross-mode set-diffs, prints a stratified report ending in a plain-
+ * language DECISION RECOMMENDATION, and (under `--check`) gates regressions with
+ * two NON-byte-identity gates. The two engines answer DIFFERENT questions at
+ * DIFFERENT granularities — the report shows both, neither strictly dominates.
  *
  * ── Substrate (the load-bearing mechanism — KTD9/R8; plan U7 "Substrate
  * decision") ──────────────────────────────────────────────────────────────
@@ -26,14 +33,17 @@
  *   3. `new LocalBackend(); await init()` resolves the fixture via the REAL
  *      registry (the parent process ALSO sets `GITNEXUS_HOME` so init reads the
  *      temp registry, not the user's ~/.gitnexus);
- *   4. `callTool('impact', {repo:<copyPath>, target, direction, mode})` ×2;
+ *   4. `callTool('impact', …)` ×2 — callgraph (symbol BFS) and pdg (seeded on
+ *      `line: criterion.line` so it returns the statement-anchored slice);
  *   5. teardown the temp home + copy.
  *
  * The `repo` arg is the absolute fixture-copy PATH (tier-1 path match in
  * `resolveRepoFromCache`) — unambiguous, no name collisions.
  *
  * ── Granularity / CIS-AIS framing ──────────────────────────────────────────
- * See `metrics.mjs`. Symbol granularity, line-collapsed, order-independent.
+ * See `metrics.mjs`. PDG = intra-procedural LINE granularity vs `intra_AIS`;
+ * call-graph = inter-procedural SYMBOL granularity vs `inter_AIS`. The two
+ * engines measure different scopes; both are now non-empty.
  *
  * Build-free: `node --import tsx bench/impact-pdg/measure.mjs`. Runtime budget
  * and re-baseline instructions: see README.md.
@@ -47,11 +57,10 @@ import { fileURLToPath } from 'node:url';
 
 import {
   symbolKey,
-  toKeySet,
+  pdgLineCis,
+  intraLineAis,
   score,
-  compareModes,
   aggregate,
-  partitionCisByScope,
   aisByScope,
   fingerprintAnnotationSet,
   median,
@@ -136,15 +145,26 @@ async function analyzeAndImpact(fx, home, { pdgOn = true } = {}) {
     const backend = new LocalBackend();
     await backend.init();
 
-    const results = {};
-    for (const mode of MODES) {
-      results[mode] = await backend.callTool('impact', {
+    // callgraph: symbol→symbol BFS (no statement anchor). pdg: SEEDED on the
+    // criterion's statement line so it returns the dependence slice — the U7
+    // rework's central change. A whole-symbol pdg slice (no `line`) is empty by
+    // design; `criterion.line` is the 1-based source line of the changed
+    // statement (set from source semantics, validated in Step 0).
+    const results = {
+      callgraph: await backend.callTool('impact', {
         repo: work,
         target: fx.gt.criterion.name,
         direction: fx.gt.criterion.direction,
-        mode,
-      });
-    }
+        mode: 'callgraph',
+      }),
+      pdg: await backend.callTool('impact', {
+        repo: work,
+        target: fx.gt.criterion.name,
+        direction: fx.gt.criterion.direction,
+        mode: 'pdg',
+        line: fx.gt.criterion.line,
+      }),
+    };
     succeeded = true;
     return { work, results };
   } finally {
@@ -154,16 +174,18 @@ async function analyzeAndImpact(fx, home, { pdgOn = true } = {}) {
   }
 }
 
-/** Flatten an impact result's byDepth into canonical symbol keys (the CIS). */
-function cisFromResult(res) {
+/**
+ * Flatten a CALLGRAPH impact result's byDepth into canonical SYMBOL keys (the
+ * CIS_callgraph, scored against `inter_AIS`). Unresolved shadow entries are kept
+ * (keyed by file) so a recall loss is never hidden.
+ */
+function callgraphCisFromResult(res) {
   const items = Object.values(res?.byDepth ?? {}).flat();
   const keys = new Set();
-  const meta = { unresolved: 0, ambiguous: 0, blockCount: res?.blockCount ?? null };
+  const meta = { unresolved: 0, ambiguous: 0 };
   for (const it of items) {
     if (it?.unresolved) {
       meta.unresolved += 1;
-      // surfaced under its file as an unresolved shadow entry — kept in the CIS
-      // so a recall loss is never hidden, keyed by its file (no symbol name).
       keys.add(symbolKey('(unresolved)', it.filePath));
       continue;
     }
@@ -171,6 +193,25 @@ function cisFromResult(res) {
     keys.add(symbolKey(it.name, it.filePath));
   }
   return { keys, meta };
+}
+
+/**
+ * Extract the PDG statement-line CIS (`<filePath>:<line>` keys) from a pdg
+ * impact result's `affectedStatements`, plus the diagnostic fields the report
+ * surfaces (the slice's epistemic marker / note / block count). This is the
+ * U7-rework CIS: the dependent STATEMENTS the change at `criterion.line` reaches.
+ */
+function pdgCisFromResult(res) {
+  return {
+    keys: pdgLineCis(res?.affectedStatements),
+    meta: {
+      affectedStatementCount: res?.affectedStatementCount ?? 0,
+      blockCount: res?.blockCount ?? null,
+      criterionLine: res?.criterionLine ?? null,
+      epistemic: res?.epistemic ?? null,
+      note: res?.note ?? null,
+    },
+  };
 }
 
 // ── Step 0: fixture AIS validation (gated on the live traversal; KTD9
@@ -257,20 +298,34 @@ async function validateFixture(fx, work, exec) {
   return { critEdges, sameLineCollision, problems, measurable: problems.length === 0 };
 }
 
-// ── per-fixture scoring ──────────────────────────────────────────────────────
+// ── per-fixture scoring (each mode vs its NATIVE ground truth — U7 rework) ────
 
 /**
- * Score one fixture for one mode, per scope. CIS partitioned into intra (the
- * criterion symbol itself) / inter (others) / mixed (union); AIS likewise.
+ * Score the CALLGRAPH mode for one fixture: its reported SYMBOL CIS against the
+ * fixture's `inter_AIS` (the cross-function symbols truly affected). The
+ * criterion symbol itself is dropped from the CIS first — callgraph never names
+ * the criterion as its own dependent, and `inter_AIS` is cross-function by
+ * construction, so a stray self-reference would be spurious noise. (In practice
+ * the callgraph CIS already excludes the seed; this is belt-and-suspenders.)
  */
-function scoreFixtureMode(gt, cisKeys) {
+function scoreCallgraph(gt, symbolCisKeys) {
   const ais = aisByScope(gt);
-  const cisPart = partitionCisByScope(cisKeys, ais.criterionKey);
-  return {
-    intra: score(cisPart.intra, ais.intra),
-    inter: score(cisPart.inter, ais.inter),
-    mixed: score(cisPart.mixed, ais.mixed),
-  };
+  const cis = new Set([...symbolCisKeys].filter((k) => k !== ais.criterionKey));
+  return score(cis, ais.inter);
+}
+
+/**
+ * Score the PDG mode for one fixture: its statement-LINE CIS (the
+ * `affectedStatements` from the line-seeded slice) against the fixture's
+ * `intra_AIS` LINE set. This is the intra-procedural statement-granularity
+ * measurement the U7 rework introduces. For an inter fixture (`intra_AIS` empty
+ * by design) the slice may return the router's own control-dependent statements
+ * — those are FPIS against the empty intra ground truth and recall is n/a, which
+ * is the honest "PDG is intra-procedural; on a pure-inter fixture it has no
+ * meaningful intra ground truth" result (symmetric to callgraph's empty intra).
+ */
+function scorePdg(gt, lineCisKeys) {
+  return score(lineCisKeys, intraLineAis(gt));
 }
 
 // ── reporting helpers ────────────────────────────────────────────────────────
@@ -281,14 +336,17 @@ const lpad = (s, n) => String(s).padStart(n);
 
 function renderTable(strata) {
   const head =
-    `${pad('Scope', 7)} ${pad('Mode', 10)} ${lpad('P', 7)} ${lpad('R', 7)} ${lpad('F1', 7)} ` +
+    `${pad('Scope', 7)} ${pad('Mode', 10)} ${pad('Granularity', 11)} ${lpad('P', 7)} ${lpad('R', 7)} ${lpad('F1', 7)} ` +
     `${lpad('|CIS|/|AIS|', 11)} ${lpad('FPIS', 6)} ${lpad('FNIS', 6)} ${lpad('n', 4)}`;
   const lines = [head, '-'.repeat(head.length)];
+  // PDG is scored at LINE granularity vs intra_AIS; callgraph at SYMBOL
+  // granularity vs inter_AIS — the column makes the "different scopes" explicit.
+  const gran = (mode) => (mode === 'pdg' ? 'line/intra' : 'symbol/inter');
   for (const scope of SCOPES) {
     for (const mode of MODES) {
       const a = strata[scope][mode];
       lines.push(
-        `${pad(scope, 7)} ${pad(mode, 10)} ${lpad(fmt(a.precision), 7)} ${lpad(fmt(a.recall), 7)} ` +
+        `${pad(scope, 7)} ${pad(mode, 10)} ${pad(gran(mode), 11)} ${lpad(fmt(a.precision), 7)} ${lpad(fmt(a.recall), 7)} ` +
           `${lpad(fmt(a.f1), 7)} ${lpad(fmt(a.cisAisRatio), 11)} ${lpad(a.fpis, 6)} ${lpad(a.fnis, 6)} ` +
           `${lpad(a.nCases, 4)}`,
       );
@@ -300,15 +358,19 @@ function renderTable(strata) {
 /**
  * Plain-language DECISION RECOMMENDATION (F2 — the deliverable that answers
  * "which is more accurate" as a verdict, not just a table). Derived from the
- * measured numbers: compares inter-scope recall (the cross-function questions
- * users most bring to impact) and any measured intra-scope precision edge.
+ * measured numbers: PDG's intra-procedural STATEMENT-granularity F1 (the slice it
+ * is built to compute) and call-graph's inter-procedural SYMBOL-granularity F1
+ * (the cross-function reach it is built to compute).
  */
 function decisionRecommendation(strata, underpowered, exclusions) {
-  const cgInterR = strata.inter.callgraph.recall;
-  const pdgInterR = strata.inter.pdg.recall;
-  const cgIntraP = strata.intra.callgraph.precision;
+  // PDG is precise at intra LINE granularity; callgraph covers inter SYMBOL reach.
+  const pdgIntraF1 = strata.intra.pdg.f1;
   const pdgIntraP = strata.intra.pdg.precision;
-  const pdgIntraReports = strata.intra.pdg.nPrecision > 0; // did PDG report ANY intra symbol?
+  const pdgIntraR = strata.intra.pdg.recall;
+  const cgInterF1 = strata.inter.callgraph.f1;
+  const cgInterR = strata.inter.callgraph.recall;
+  const pdgMixedF1 = strata.mixed.pdg.f1;
+  const cgMixedF1 = strata.mixed.callgraph.f1;
 
   const lines = [];
   lines.push('DECISION RECOMMENDATION');
@@ -319,42 +381,43 @@ function decisionRecommendation(strata, underpowered, exclusions) {
     );
   }
 
-  // Inter-scope: the cross-function blast radius.
-  if (cgInterR !== null && pdgInterR !== null) {
-    lines.push(
-      `On INTER-scope (cross-function) impact, call-graph recall is ${fmt(cgInterR)} vs PDG ${fmt(pdgInterR)}: ` +
-        `PDG's intra-procedural design means it recovers ~0 cross-function impact BY DESIGN (a capability ` +
-        `fact, not a defect). Call-graph is the correct engine for the "what else calls/uses this?" question.`,
-    );
-  }
+  // Intra-scope: the statement-anchored PDG slice — the question PDG answers.
+  lines.push(
+    `On INTRA-scope (statement granularity), the line-seeded PDG slice scores P=${fmt(pdgIntraP)} ` +
+      `R=${fmt(pdgIntraR)} F1=${fmt(pdgIntraF1)} against intra_AIS: it identifies the dependent ` +
+      `STATEMENTS of the changed line precisely. Call-graph mode cannot resolve below function ` +
+      `granularity, so on a self-contained function it names no other symbol (intra recall n/a — ` +
+      `no cross-function truth to find). PDG is the engine for "which statements does this line affect?".`,
+  );
 
-  // Intra-scope: the case PDG was built to win.
-  if (!pdgIntraReports) {
+  // Inter-scope: the cross-function blast radius — the question call-graph answers.
+  lines.push(
+    `On INTER-scope (symbol granularity), call-graph scores R=${fmt(cgInterR)} F1=${fmt(cgInterF1)} ` +
+      `against inter_AIS: it recovers the cross-function callees exactly. PDG mode is ` +
+      `intra-procedural, so on a pure-inter fixture it returns only the router's own ` +
+      `control-dependent statements (FPIS against the empty intra_AIS — recall n/a). Call-graph is ` +
+      `the engine for "what else calls/uses this?".`,
+  );
+
+  // Mixed-scope: both engines contribute, each in its own scope.
+  if (pdgMixedF1 !== null || cgMixedF1 !== null) {
     lines.push(
-      `On INTRA-scope, PDG mode reported NO owning symbols across the measurable corpus: its block→symbol ` +
-        `projection collapses a function's own dependence blocks back onto the criterion itself, which the ` +
-        `traversal excludes as the seed — so at SYMBOL granularity the intra-procedural blast radius is the ` +
-        `empty set. PDG's intra value in v1 is therefore the BLOCK-LEVEL detail it surfaces ` +
-        `(reachableBlocks / blockCount), NOT a symbol-level impact set. The harness records the per-fixture ` +
-        `dependence-block counts so this is visible, not hidden as a flat zero.`,
-    );
-  } else if (pdgIntraP !== null && cgIntraP !== null) {
-    const verb = pdgIntraP > cgIntraP ? 'higher' : pdgIntraP < cgIntraP ? 'lower' : 'equal';
-    lines.push(
-      `On INTRA-scope, PDG precision is ${fmt(pdgIntraP)} vs call-graph ${fmt(cgIntraP)} (${verb}). ` +
-        `This is the measured direction on this corpus, reported as a fact, not asserted as a hypothesis.`,
+      `On MIXED-scope, the two are COMPLEMENTARY: PDG resolves the intra statement set ` +
+        `(F1=${fmt(pdgMixedF1)} vs intra_AIS) while call-graph reaches the callee(s) ` +
+        `(F1=${fmt(cgMixedF1)} vs inter_AIS). Neither alone covers the full mixed blast radius.`,
     );
   }
 
   lines.push(
-    `VERDICT: use mode:'callgraph' as the default — it carries the inter-procedural reach that the ` +
-      `impact tool's safety question depends on. mode:'pdg' adds value as an OPT-IN lens for ` +
-      `intra-procedural dependence INSPECTION (its reachableBlocks / CDG+REACHING_DEF detail), and ` +
-      `where the persisted PDG layer exists (analyze --pdg). It is NOT a replacement for, nor a ` +
-      `strict improvement over, the call-graph blast radius: the two engines occupy different points ` +
-      `on the precision/recall curve and neither strictly dominates. Promotion of mode:'pdg' beyond ` +
-      `opt-in is GATED on a Function→BasicBlock CONTAINS_BLOCK substrate edge (deferred) that would let ` +
-      `the symbol BFS chain natively into the PDG and give intra reach a symbol-level meaning.`,
+    `VERDICT: the two engines answer DIFFERENT questions at DIFFERENT granularities, and NEITHER ` +
+      `dominates. mode:'callgraph' (the default) is the correct engine for the inter-procedural ` +
+      `safety question — "what else depends on / calls this symbol?" — carrying the cross-function ` +
+      `reach the blast radius needs. mode:'pdg' (opt-in, seeded with line:N, where analyze --pdg ` +
+      `persisted the layer) is PRECISE at intra-procedural STATEMENT granularity — "which statements ` +
+      `inside this function does changing line N affect?" — a question call-graph cannot answer at ` +
+      `all. Use call-graph for cross-symbol impact; reach for line-seeded PDG when you need ` +
+      `statement-level dependence INSIDE a function. They compose: a full mixed-locus blast radius ` +
+      `is the UNION of call-graph's inter-symbol reach and PDG's intra-statement slice.`,
   );
   if (exclusions.length > 0) {
     lines.push(
@@ -429,43 +492,40 @@ async function run() {
             continue;
           }
 
-          const cg = cisFromResult(results.callgraph);
-          const pdg = cisFromResult(results.pdg);
-          const cgScores = scoreFixtureMode(fx.gt, cg.keys);
-          const pdgScores = scoreFixtureMode(fx.gt, pdg.keys);
+          // CALLGRAPH: symbol CIS vs inter_AIS. PDG: line CIS vs intra_AIS.
+          const cg = callgraphCisFromResult(results.callgraph);
+          const pdg = pdgCisFromResult(results.pdg);
+          const cgScore = scoreCallgraph(fx.gt, cg.keys); // symbol/inter
+          const pdgScore = scorePdg(fx.gt, pdg.keys); // line/intra
 
           const locusScope = fx.gt.locus; // the stratum this fixture belongs to
-          // A fixture is scored in its OWN locus stratum (intra/inter/mixed).
+          // A fixture is scored in its OWN locus stratum (intra/inter/mixed),
+          // each mode against its native ground truth (symbol vs line).
           if (SCOPES.includes(locusScope)) {
-            perScopeMode[locusScope].callgraph.push(cgScores[locusScope]);
-            perScopeMode[locusScope].pdg.push(pdgScores[locusScope]);
+            perScopeMode[locusScope].callgraph.push(cgScore);
+            perScopeMode[locusScope].pdg.push(pdgScore);
           }
 
           if (runIdx === 0) {
-            const ais = aisByScope(fx.gt);
-            const cmp = compareModes(cg.keys, pdg.keys, ais.mixed);
             detail.push({
               name: fx.name,
               locus: fx.gt.locus,
               criterion: fx.gt.criterion.name,
               direction: fx.gt.criterion.direction,
+              criterionLine: fx.gt.criterion.line ?? null,
               critEdges: v.critEdges,
               cg: {
                 count: results.callgraph.impactedCount,
                 symbols: [...cg.keys].sort(),
-                scores: cgScores,
+                score: cgScore, // vs inter_AIS (symbol)
               },
               pdg: {
-                count: results.pdg.impactedCount,
+                affectedStatementCount: pdg.meta.affectedStatementCount,
                 blockCount: pdg.meta.blockCount,
-                unresolved: pdg.meta.unresolved,
-                ambiguous: pdg.meta.ambiguous,
-                symbols: [...pdg.keys].sort(),
-                scores: pdgScores,
+                criterionLine: pdg.meta.criterionLine,
+                lines: [...pdg.keys].sort(),
+                score: pdgScore, // vs intra_AIS (line)
               },
-              jaccard: cmp.jaccard,
-              pdgOnly: cmp.pdgOnly,
-              callgraphOnly: cmp.callgraphOnly,
             });
           }
         } finally {
@@ -566,25 +626,34 @@ async function run() {
         `(${measurableTotal} measurable, ${exclusions.length} excluded) | runs K=${K}`,
     );
     out.push('');
-    out.push('Stratified P/R/F1 (symbol granularity, per impact locus):');
+    out.push(
+      'Stratified P/R/F1 (PDG: line granularity vs intra_AIS; callgraph: symbol vs inter_AIS):',
+    );
     out.push(renderTable(report));
     out.push('');
-    out.push('Per-case Jaccard + cross-mode set-diffs (true = ∩AIS, noise = −AIS):');
+    out.push(
+      'Per-case: PDG slice (line/intra) and callgraph reach (symbol/inter), with FPIS/FNIS:',
+    );
     for (const d of perCaseDetail) {
       out.push(
-        `  ${pad(d.name, 28)} locus=${pad(d.locus, 6)} J=${fmt(d.jaccard)} ` +
-          `cg|count=${d.cg.count} pdg|count=${d.pdg.count} pdg|blocks=${d.pdg.blockCount}`,
+        `  ${pad(d.name, 28)} locus=${pad(d.locus, 6)} line=${lpad(d.criterionLine ?? '-', 3)}`,
       );
-      if (d.callgraphOnly.all.length)
-        out.push(
-          `      callgraph-only: ${d.callgraphOnly.all.length} ` +
-            `(true ${d.callgraphOnly.true.length}, noise ${d.callgraphOnly.noise.length})`,
-        );
-      if (d.pdgOnly.all.length)
-        out.push(
-          `      pdg-only:       ${d.pdgOnly.all.length} ` +
-            `(true ${d.pdgOnly.true.length}, noise ${d.pdgOnly.noise.length})`,
-        );
+      // PDG line slice: F1 vs intra_AIS, with the false-positive / false-negative lines.
+      const ps = d.pdg.score;
+      out.push(
+        `      pdg  line/intra : P=${fmt(ps.precision)} R=${fmt(ps.recall)} F1=${fmt(ps.f1)} ` +
+          `|CIS|=${d.pdg.affectedStatementCount} blocks=${d.pdg.blockCount} ` +
+          `FPIS=${ps.fpisCount} FNIS=${ps.fnisCount}`,
+      );
+      if (ps.fpisCount > 0) out.push(`        FPIS(noise): ${ps.fpis.join(', ')}`);
+      if (ps.fnisCount > 0) out.push(`        FNIS(missed): ${ps.fnis.join(', ')}`);
+      // Callgraph symbol reach: F1 vs inter_AIS.
+      const cs = d.cg.score;
+      out.push(
+        `      cg   symbol/inter: P=${fmt(cs.precision)} R=${fmt(cs.recall)} F1=${fmt(cs.f1)} ` +
+          `|CIS|=${d.cg.count} FPIS=${cs.fpisCount} FNIS=${cs.fnisCount}`,
+      );
+      if (cs.fnisCount > 0) out.push(`        FNIS(missed): ${cs.fnis.join(', ')}`);
     }
     out.push('');
     if (degradedCheck) {

@@ -82,6 +82,61 @@ describe('impact-pdg metric math — score()', () => {
   });
 });
 
+describe('impact-pdg metric math — PDG line granularity (U7 rework)', () => {
+  it('pdgLineCis builds <filePath>:<line> keys from affectedStatements', () => {
+    const cis = M.pdgLineCis([
+      { line: 10, filePath: 'src/a.ts', text: 'sum = sum + x;' },
+      { line: 12, filePath: 'src/a.ts', text: 'return sum;' },
+      // a malformed entry (no numeric line) is dropped, never keyed.
+      { filePath: 'src/a.ts', text: 'noise' },
+    ]);
+    expect([...cis].sort()).toEqual(['src/a.ts:10', 'src/a.ts:12']);
+  });
+
+  it('intraLineAis builds line keys from intra_AIS; empty intra_AIS ⇒ empty set', () => {
+    const withLines = M.intraLineAis({
+      intra_AIS: [
+        { symbol: 'total', filePath: 'src/a.ts', line: 10 },
+        { symbol: 'total', filePath: 'src/a.ts', line: 12 },
+      ],
+    });
+    expect([...withLines].sort()).toEqual(['src/a.ts:10', 'src/a.ts:12']);
+    // an inter fixture has empty intra_AIS ⇒ empty line AIS (recall n/a, not 0).
+    expect(M.intraLineAis({ intra_AIS: [] }).size).toBe(0);
+  });
+
+  it('scores a line slice that exactly matches intra_AIS ⇒ P=R=F1=1 (the accumulator)', () => {
+    // The verified accumulator case: line-8 slice returns {10,12} = intra_AIS.
+    const cis = M.pdgLineCis([
+      { line: 10, filePath: 'src/accumulator.ts' },
+      { line: 12, filePath: 'src/accumulator.ts' },
+    ]);
+    const ais = M.intraLineAis({
+      intra_AIS: [
+        { filePath: 'src/accumulator.ts', line: 10 },
+        { filePath: 'src/accumulator.ts', line: 12 },
+      ],
+    });
+    const s = M.score(cis, ais);
+    expect(s.precision).toBe(1);
+    expect(s.recall).toBe(1);
+    expect(s.f1).toBe(1);
+  });
+
+  it('an inter fixture (empty intra_AIS) ⇒ precision 0 on the router noise, recall n/a', () => {
+    // A pure-inter router's line slice returns its own routing returns as FPIS
+    // against the empty intra_AIS — the by-design "PDG is intra-procedural" case.
+    const cis = M.pdgLineCis([
+      { line: 24, filePath: 'src/d.ts' },
+      { line: 26, filePath: 'src/d.ts' },
+    ]);
+    const s = M.score(cis, M.intraLineAis({ intra_AIS: [] }));
+    expect(s.precision).toBe(0); // 2 predicted, none in (empty) intra truth
+    expect(s.recall).toBe(null); // |AIS|=0 ⇒ recall n/a
+    expect(s.f1).toBe(null);
+  });
+});
+
 describe('impact-pdg metric math — compareModes()', () => {
   it('Jaccard + directional set-diffs split true/noise', () => {
     // callgraph finds {a,b,c} (a,b real, c noise); pdg finds {b,d} (b real, d noise).
@@ -230,6 +285,42 @@ describe('impact-pdg metric math — annotation fingerprint (KTD10)', () => {
       fakeHash,
     );
     expect(edited).not.toBe(base);
+  });
+
+  it('trips when criterion.line changes (the PDG slice seed — U7 rework)', () => {
+    // criterion.line is part of the ground truth: it seeds the statement-anchored
+    // PDG slice, so changing it changes the measured impact set and MUST trip.
+    const base = M.fingerprintAnnotationSet(
+      [
+        fx({
+          criterion: {
+            name: 'f',
+            filePath: 'src/f.ts',
+            direction: 'downstream',
+            line: 8,
+            marker: 'x',
+            pdgEdgeKinds: ['REACHING_DEF'],
+          },
+        }),
+      ],
+      fakeHash,
+    );
+    const moved = M.fingerprintAnnotationSet(
+      [
+        fx({
+          criterion: {
+            name: 'f',
+            filePath: 'src/f.ts',
+            direction: 'downstream',
+            line: 9,
+            marker: 'x',
+            pdgEdgeKinds: ['REACHING_DEF'],
+          },
+        }),
+      ],
+      fakeHash,
+    );
+    expect(moved).not.toBe(base);
   });
 
   it('trips when the criterion direction flips', () => {
