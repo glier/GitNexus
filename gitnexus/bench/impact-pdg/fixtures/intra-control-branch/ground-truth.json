@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "criterion": {
+    "name": "classify",
+    "filePath": "src/branch.ts",
+    "direction": "downstream",
+    "marker": "'zero'",
+    "pdgEdgeKinds": [
+      "REACHING_DEF",
+      "CDG"
+    ]
+  },
+  "locus": "intra",
+  "provenance": "manual",
+  "analyzerVersion": "1.6.7",
+  "intra_AIS": [
+    {
+      "symbol": "classify",
+      "filePath": "src/branch.ts",
+      "line": 9,
+      "note": "`return 'pos'` is control-dependent on the `x > 0` arm"
+    },
+    {
+      "symbol": "classify",
+      "filePath": "src/branch.ts",
+      "line": 11,
+      "note": "`return 'neg'` is control-dependent on the `x < 0` else-if arm"
+    },
+    {
+      "symbol": "classify",
+      "filePath": "src/branch.ts",
+      "line": 13,
+      "note": "`return 'zero'` is control-dependent on the fallthrough arm"
+    }
+  ],
+  "inter_AIS": [],
+  "rationale": "Criterion is the if/else-if predicate chain in `classify` (line 7). CDG controller->dependent edges reach each return arm (lines 9, 11, 13); each runs only under its arm's condition. All dependents are intra-procedural; the function calls nothing. intra_AIS = the three arm returns; inter_AIS empty. Exercises CDG-forward over a multi-arm branch. Note the `else if (x < 0)` test on line 10 is itself nested control flow; the truly-affected executable statements are the three returns, which is what we annotate at statement granularity."
+}

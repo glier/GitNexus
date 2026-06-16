@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "criterion": {
+    "name": "processOrder",
+    "filePath": "src/facade.ts",
+    "direction": "downstream",
+    "marker": "enrich(order)",
+    "pdgEdgeKinds": [
+      "REACHING_DEF",
+      "CDG"
+    ]
+  },
+  "locus": "inter",
+  "provenance": "manual",
+  "analyzerVersion": "1.6.7",
+  "intra_AIS": [],
+  "inter_AIS": [
+    {
+      "symbol": "validate",
+      "filePath": "src/facade.ts",
+      "note": "the guard delegate; processOrder's behavior depends on it"
+    },
+    {
+      "symbol": "enrich",
+      "filePath": "src/facade.ts",
+      "note": "transforms the order before persistence"
+    },
+    {
+      "symbol": "persist",
+      "filePath": "src/facade.ts",
+      "note": "the terminal delegate in the sequence"
+    }
+  ],
+  "rationale": "`processOrder` is a facade sequencing three delegates (validate, enrich, persist) with one guard. Its true blast radius is the delegation chain — the inter_AIS — not its own body, which only routes values between calls. intra_AIS is empty: the guard return and the local `enriched` binding carry no independent work beyond shuttling delegate results. PDG mode (intra-procedural) has ~0 inter-AIS recall here BY DESIGN; call-graph mode walks validate->enrich->persist. Anchors the `inter` stratum with a sequential-delegation shape (distinct from the dispatcher's branching shape). The single guard gives `processOrder` a CDG edge so the smoke test's edge-presence requirement is met."
+}

@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "criterion": {
+    "name": "dispatch",
+    "filePath": "src/dispatcher.ts",
+    "direction": "downstream",
+    "marker": "kind === 'b'",
+    "pdgEdgeKinds": [
+      "REACHING_DEF",
+      "CDG"
+    ]
+  },
+  "locus": "inter",
+  "provenance": "manual",
+  "analyzerVersion": "1.6.7",
+  "intra_AIS": [],
+  "inter_AIS": [
+    {
+      "symbol": "handleA",
+      "filePath": "src/dispatcher.ts",
+      "note": "routed to when kind === 'a'; its behavior is part of dispatch's true blast radius"
+    },
+    {
+      "symbol": "handleB",
+      "filePath": "src/dispatcher.ts",
+      "note": "routed to when kind === 'b'"
+    },
+    {
+      "symbol": "handleDefault",
+      "filePath": "src/dispatcher.ts",
+      "note": "the fallthrough route"
+    }
+  ],
+  "rationale": "`dispatch` is a thin router whose true impact is ENTIRELY cross-function: changing it affects the three handlers it dispatches to (handleA/handleB/handleDefault). There is no meaningful intra-procedural blast radius — the only intra-statements are the routing branch returns, which carry no work of their own. So intra_AIS is empty and inter_AIS is the three callees. PDG mode is intra-procedural by design, so on this case its inter-AIS recall is ~0 BY DESIGN (a capability fact, not a defect); the call-graph mode, with inter-procedural reach, finds all three. This case anchors the `inter` stratum so the harness can report complementary coverage. NOTE: the smoke test still requires `dispatch` to produce SOME CDG/REACHING_DEF edges (its routing branches do) — a zero-edge criterion would be unmeasurable; but those edges are not the AIS."
+}
