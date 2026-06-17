@@ -32,6 +32,15 @@ import fs from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { getRemoteOriginUrl } from '../../src/storage/git.js';
 
+// CLONE_ROOT now derives from getGlobalDir() (GITNEXUS_HOME || ~/.gitnexus), so
+// assertions must mirror that derivation rather than hardcoding ~/.gitnexus —
+// otherwise an ambient GITNEXUS_HOME (e.g. a CI runner that sets it) makes the
+// "direct child of the clone root" assertions fail. Computed at module load,
+// the same point CLONE_ROOT is frozen, so the two always agree.
+const EXPECTED_CLONE_ROOT = path.resolve(
+  path.join(process.env.GITNEXUS_HOME || path.join(os.homedir(), '.gitnexus'), 'repos'),
+);
+
 describe('git-clone', () => {
   describe('extractRepoName', () => {
     it('extracts name from HTTPS URL', () => {
@@ -112,11 +121,9 @@ describe('git-clone', () => {
   });
 
   describe('getCloneDir', () => {
-    it('returns path under ~/.gitnexus/repos/', () => {
+    it('returns path under the clone root (getGlobalDir()/repos/)', () => {
       const dir = getCloneDir('my-repo');
-      expect(dir).toContain('.gitnexus');
-      expect(dir).toMatch(/repos/);
-      expect(dir).toContain('my-repo');
+      expect(dir).toBe(path.join(EXPECTED_CLONE_ROOT, 'my-repo'));
     });
 
     it('rejects ".." to prevent path-traversal escape from the clone root', () => {
@@ -131,7 +138,7 @@ describe('git-clone', () => {
     });
 
     it('returned path is always a direct child of the clone root', () => {
-      const cloneRoot = path.resolve(path.join(os.homedir(), '.gitnexus', 'repos'));
+      const cloneRoot = EXPECTED_CLONE_ROOT;
       const dir = getCloneDir('my-repo');
       const rel = path.relative(cloneRoot, path.resolve(dir));
       // path.relative from the parent to the child must be just the child name —
@@ -476,7 +483,7 @@ describe('git-clone', () => {
     //
     // These tests do NOT mock spawn — the barrier throws synchronously
     // before git is invoked, so the rejection is observable directly.
-    const cloneRoot = path.resolve(path.join(os.homedir(), '.gitnexus', 'repos'));
+    const cloneRoot = EXPECTED_CLONE_ROOT;
 
     it('rejects an absolute target outside CLONE_ROOT', async () => {
       await expect(cloneOrPull('https://github.com/a/b.git', '/etc/passwd')).rejects.toThrow(

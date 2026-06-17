@@ -67,4 +67,34 @@ describe('GITNEXUS_HOME path roots', () => {
     );
     expect(UPLOAD_ROOT).toBe(path.resolve(os.homedir(), '.gitnexus', 'uploads'));
   });
+
+  it('server-mapping falls back to ~/.gitnexus when GITNEXUS_HOME is unset', async () => {
+    // os.homedir() honors $HOME (and $USERPROFILE on Windows), so redirect the
+    // home dir to a tmp path to exercise the real fallback (getGlobalDir() ->
+    // ~/.gitnexus) without writing into the developer's actual
+    // ~/.gitnexus/server-mapping.json.
+    const fakeHome = path.join(os.tmpdir(), 'gitnexus-fallback-home');
+    const savedHome = process.env.HOME;
+    const savedUserProfile = process.env.USERPROFILE;
+    delete process.env.GITNEXUS_HOME;
+    process.env.HOME = fakeHome;
+    process.env.USERPROFILE = fakeHome;
+    try {
+      await fs.mkdir(path.join(fakeHome, '.gitnexus'), { recursive: true });
+      await fs.writeFile(
+        path.join(fakeHome, '.gitnexus', 'server-mapping.json'),
+        JSON.stringify({ 'my-repo': 'fallback-service' }),
+        'utf-8',
+      );
+      vi.resetModules();
+      const { readServerMapping } = await import('../../src/core/embeddings/server-mapping.js');
+      expect(await readServerMapping('my-repo')).toBe('fallback-service');
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      if (savedUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = savedUserProfile;
+      await fs.rm(fakeHome, { recursive: true, force: true });
+    }
+  });
 });
