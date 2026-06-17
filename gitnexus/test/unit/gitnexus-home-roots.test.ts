@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs/promises';
@@ -20,7 +20,14 @@ import fs from 'node:fs/promises';
  */
 describe('GITNEXUS_HOME path roots', () => {
   const savedHome = process.env.GITNEXUS_HOME;
-  const customHome = path.join(os.tmpdir(), 'gitnexus-home-roots-test');
+  // mkdtemp (not a fixed os.tmpdir() name) so a co-located process cannot
+  // pre-create or symlink the path before our writes land
+  // (CodeQL js/insecure-temporary-file).
+  let customHome: string;
+
+  beforeEach(async () => {
+    customHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-home-roots-'));
+  });
 
   afterEach(async () => {
     if (savedHome === undefined) delete process.env.GITNEXUS_HOME;
@@ -46,7 +53,6 @@ describe('GITNEXUS_HOME path roots', () => {
 
   it('server-mapping file is read from GITNEXUS_HOME', async () => {
     process.env.GITNEXUS_HOME = customHome;
-    await fs.mkdir(customHome, { recursive: true });
     await fs.writeFile(
       path.join(customHome, 'server-mapping.json'),
       JSON.stringify({ 'my-repo': 'payments-service' }),
@@ -73,7 +79,7 @@ describe('GITNEXUS_HOME path roots', () => {
     // home dir to a tmp path to exercise the real fallback (getGlobalDir() ->
     // ~/.gitnexus) without writing into the developer's actual
     // ~/.gitnexus/server-mapping.json.
-    const fakeHome = path.join(os.tmpdir(), 'gitnexus-fallback-home');
+    const fakeHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-fallback-home-'));
     const savedHome = process.env.HOME;
     const savedUserProfile = process.env.USERPROFILE;
     delete process.env.GITNEXUS_HOME;
