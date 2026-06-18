@@ -31,15 +31,16 @@ import os from 'node:os';
 import fs from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { getRemoteOriginUrl } from '../../src/storage/git.js';
+import { getGlobalDir } from '../../src/storage/repo-manager.js';
 
 // CLONE_ROOT now derives from getGlobalDir() (GITNEXUS_HOME || ~/.gitnexus), so
 // assertions must mirror that derivation rather than hardcoding ~/.gitnexus —
 // otherwise an ambient GITNEXUS_HOME (e.g. a CI runner that sets it) makes the
-// "direct child of the clone root" assertions fail. Computed at module load,
-// the same point CLONE_ROOT is frozen, so the two always agree.
-const EXPECTED_CLONE_ROOT = path.resolve(
-  path.join(process.env.GITNEXUS_HOME || path.join(os.homedir(), '.gitnexus'), 'repos'),
-);
+// "direct child of the clone root" assertions fail. We call getGlobalDir()
+// directly (the same function production CLONE_ROOT uses) so the test cannot
+// drift from production if that derivation ever changes. Computed at module
+// load, the same point CLONE_ROOT is frozen, so the two always agree.
+const EXPECTED_CLONE_ROOT = path.resolve(path.join(getGlobalDir(), 'repos'));
 
 describe('git-clone', () => {
   describe('extractRepoName', () => {
