@@ -10,8 +10,10 @@ import path from 'path';
 import { getGlobalDir } from '../../storage/repo-manager.js';
 
 // Sourced from getGlobalDir() so it honors GITNEXUS_HOME (the Docker image sets
-// GITNEXUS_HOME=/data/gitnexus); falls back to ~/.gitnexus when unset.
-const MAPPING_FILE = path.join(getGlobalDir(), 'server-mapping.json');
+// GITNEXUS_HOME=/data/gitnexus); falls back to ~/.gitnexus when unset. Wrapped in
+// path.resolve() for parity with the clone/upload roots (git-clone.ts CLONE_ROOT,
+// upload-paths.ts UPLOAD_ROOT) so a relative GITNEXUS_HOME still yields an absolute path.
+const MAPPING_FILE = path.resolve(path.join(getGlobalDir(), 'server-mapping.json'));
 
 let cachedMapping: Record<string, string> | null = null;
 
