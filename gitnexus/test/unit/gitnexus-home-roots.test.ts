@@ -80,7 +80,7 @@ describe('GITNEXUS_HOME path roots', () => {
     // ~/.gitnexus) without writing into the developer's actual
     // ~/.gitnexus/server-mapping.json.
     const fakeHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-fallback-home-'));
-    const savedHome = process.env.HOME;
+    const savedProcessHome = process.env.HOME;
     const savedUserProfile = process.env.USERPROFILE;
     delete process.env.GITNEXUS_HOME;
     process.env.HOME = fakeHome;
@@ -96,8 +96,8 @@ describe('GITNEXUS_HOME path roots', () => {
       const { readServerMapping } = await import('../../src/core/embeddings/server-mapping.js');
       expect(await readServerMapping('my-repo')).toBe('fallback-service');
     } finally {
-      if (savedHome === undefined) delete process.env.HOME;
-      else process.env.HOME = savedHome;
+      if (savedProcessHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedProcessHome;
       if (savedUserProfile === undefined) delete process.env.USERPROFILE;
       else process.env.USERPROFILE = savedUserProfile;
       await fs.rm(fakeHome, { recursive: true, force: true });
