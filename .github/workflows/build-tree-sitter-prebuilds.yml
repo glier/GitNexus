@@ -14,8 +14,9 @@ name: Build tree-sitter prebuilds
 #                         REQUIRED grammar)
 #   - tree-sitter-dart   (vendored source; built from gitnexus/vendor/)
 #   - tree-sitter-proto  (vendored source; built from gitnexus/vendor/)
-#   - tree-sitter-kotlin (vendored source; built from the published npm package —
-#                         upstream ships source only)
+#   - tree-sitter-kotlin (vendored source; built from gitnexus/vendor/ — pinned to
+#                         an unreleased main commit for `fun interface` support
+#                         (#169) that no npm release carries yet)
 #   - tree-sitter-swift  (vendored source; built from gitnexus/vendor/ — its
 #                         prebuilds were originally upstream-shipped, now
 #                         GitNexus-cross-built like the rest for uniformity)
@@ -74,7 +75,9 @@ on:
       - 'gitnexus/vendor/tree-sitter-proto/package.json'
       - 'gitnexus/vendor/tree-sitter-kotlin/package.json'
       - 'gitnexus/vendor/tree-sitter-swift/package.json'
-      # Transition window: kotlin's pin still lives here until it is vendored.
+      # Self-test: re-run the guard if a future grammar pin is reintroduced in
+      # the main package.json (optionalDependencies fallback). No-op otherwise —
+      # all five grammars are now fully vendored (kotlin included).
       - 'gitnexus/package.json'
       # Self-test: re-run the guard (normally a no-op) when the recipe changes.
       - '.github/workflows/build-tree-sitter-prebuilds.yml'
@@ -135,7 +138,12 @@ jobs:
             c:      { name: 'tree-sitter-c',      kind: 'npm' },
             dart:   { name: 'tree-sitter-dart',   kind: 'vendored' },
             proto:  { name: 'tree-sitter-proto',  kind: 'vendored' },
-            kotlin: { name: 'tree-sitter-kotlin', kind: 'npm' },
+            // kotlin is vendored WITH its source (parser.c/scanner.c/binding.gyp),
+            // so it builds from gitnexus/vendor/ like dart/proto/swift. It was
+            // 'npm' while tracking released versions, but is now pinned to an
+            // unreleased main commit for `fun interface` support (#169) that no
+            // npm release carries yet — so it must build from the vendored source.
+            kotlin: { name: 'tree-sitter-kotlin', kind: 'vendored' },
             // swift is vendored WITH its source (parser.c/scanner.c/binding.gyp),
             // so it builds from gitnexus/vendor/ like dart/proto. Its prebuilds
             // were originally upstream-shipped; rebuilding them here unifies it.
