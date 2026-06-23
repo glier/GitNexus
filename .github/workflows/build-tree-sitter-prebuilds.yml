@@ -39,7 +39,10 @@ name: Build tree-sitter prebuilds
 # costs exactly one matrix run for that grammar. Delivery of the rebuilt binaries:
 #   - same-repo PR  -> committed straight onto the PR's own branch (in the SAME PR);
 #   - manual dispatch (open_pr=true) -> a fresh chore/ PR;
-#   - fork PR -> artifacts only (a bot cannot push into a fork branch), no commit.
+#   - fork PR -> the trusted commit-fork-prebuilds.yml (workflow_run) pushes them
+#                onto the fork branch when "Allow edits by maintainers" is on, else
+#                comments download-and-commit instructions. That consumer must be
+#                on the DEFAULT branch to run, so it activates once merged to main.
 #
 # Concurrency convention: see CONTRIBUTING.md -> "GitHub Actions — Concurrency Convention".
 #
@@ -288,6 +291,47 @@ jobs:
           if [ "$HAS_APP" != "true" ]; then
             echo "::notice::Release GitHub App secrets (RELEASE_APP_ID / RELEASE_APP_PRIVATE_KEY) are not configured — prebuilds will build and upload as artifacts, but the auto-PR is skipped. Provision the App, or run with open_pr=false to suppress this notice."
           fi
+
+      # ── Fork PRs: emit the PR identity so the trusted `commit-fork-prebuilds`
+      #    workflow_run job can push the rebuilt prebuilds back onto the fork's
+      #    branch. That job has no PR context of its own (workflow_run.pull_requests
+      #    is empty for forks), so it reads this. Same-repo PRs don't need it — the
+      #    aggregate job below commits straight onto their branch. This artifact is
+      #    untrusted producer output: every field is allowlist-validated again on
+      #    the consumer side AND cross-checked against the workflow_run authority.
+      - name: Record fork PR identity
+        id: forkmeta
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == true && steps.decide.outputs.any == 'true'
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pr-meta"
+          # Values flow through env + jq so an exotic head_ref is quoted, never
+          # interpolated into a shell command.
+          jq -n \
+            --arg     schema    "gitnexus.ts-prebuild/v1" \
+            --argjson pr_number "$PR_NUMBER" \
+            --arg     head_sha  "$HEAD_SHA" \
+            --arg     head_ref  "$HEAD_REF" \
+            --arg     head_repo "$HEAD_REPO" \
+            --arg     base_repo "$BASE_REPO" \
+            '{schema:$schema, pr_number:$pr_number, head_sha:$head_sha, head_ref:$head_ref, head_repo:$head_repo, base_repo:$base_repo}' \
+            > "$RUNNER_TEMP/pr-meta/metadata.json"
+          cat "$RUNNER_TEMP/pr-meta/metadata.json"
+
+      - name: Upload fork PR meta
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == true && steps.decide.outputs.any == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pr-meta
+          path: ${{ runner.temp }}/pr-meta/metadata.json
+          if-no-files-found: error
+          retention-days: 7
 
   # ── Build one native prebuild per (grammar, platform-arch). No cross-compile. ─
   build:
